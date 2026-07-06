@@ -1,0 +1,5 @@
+name: Invoice Processing Flow
+description: Extract invoice data from PDFs and write to spreadsheet
+context_in:
+  invoice: Invoice
+

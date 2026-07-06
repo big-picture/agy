@@ -1,0 +1,12 @@
+default: true
+
+# Keep linting on, but use practical defaults for modern docs.
+MD013:
+  line_length: 120
+  code_blocks: false
+  tables: false
+  headings: false
+
+# Allow same heading text in different sections.
+MD024:
+  siblings_only: true

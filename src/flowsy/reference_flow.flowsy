@@ -1,0 +1,86 @@
+name: Travel Insurance Email Routing
+description: Classify and process travel cancellation insurance emails
+context_in:
+  email: Email
+
+nodes:
+  classify_email:
+    actions:
+      # If you want to use a different model than the standard OpenAI model, you can uncomment one of the following lines
+      # - set_model_call(provider="anthropic", model="claude-haiku-4-5-20251001", temperature=0.3)
+      # - set_model_call(provider="gemini", model="gemini-2.5-flash-lite")
+      # make sure that the respective API Keys are set in your ENV (export OPENAI_API_KEY="sk-...")
+      - show("Starting email classification for travel insurance")
+      - category = classify(input_text=email.text, categories=["question", "new_claim", "wrong_department", "unclear"], instruction_file="prompts/classify_insurance_email.md")
+      - show("Classification complete: Category:", category, " - Confidence:", confidence)
+      # - show("Category:", category, ", Confidence:", confidence)
+    edges:
+      - success == False: handle_error
+      - category == "question": question
+      - category == "new_claim": process_claim
+      - category == "wrong_department": wrong_department
+      - category == "unclear": unclear
+
+  question:
+    actions:
+      - show("Processing question")
+      - terms = load_files_text("data/Travel_Insurance_Terms.md")
+      - answer = respond(input_text=email.text, instruction_file="prompts/answer_terms_question.md", augmentation=terms)
+      - show("Generated answer for question")
+      - email.reply(answer)
+      - email.move("processed")
+      - show("Coverage question processed and replied")
+
+  process_claim:
+    actions:
+      - show("Processing claim submission")
+      - claim_data = extract(input_text=email.text, instruction_file="prompts/extract_claim_data.md", values_to_extract={"policy_number": "str", "full_name": "str", "email": "str", "phone": "str", "travel_date": "str", "cancellation_date": "str", "cancellation_reason": "str", "amount_claimed": "float", "booking_reference": "str", "destination": "str", "travel_provider": "str"})
+      - show("Extracted claim data:", claim_data)
+      - validation = validate_claim(claim_data)
+      - show("Validation result:", validation)
+    edges:
+      - validation["is_complete"] == True: complete_claim
+      - validation["is_complete"] == False: incomplete_claim
+
+  complete_claim:
+    actions:
+      - show("Processing complete claim")
+      - confirmation = submit_claim(claim_data)
+      - show("Claim submitted successfully")
+      - email.reply(confirmation)
+      - email.move("processed")
+      - show("Complete claim processed and confirmed")
+
+  incomplete_claim:
+    actions:
+      - show("Processing incomplete claim")
+      - missing_list = validation["missing_fields"]
+      - missing_str = ", ".join(missing_list)
+      - reply_text = "Thank you for submitting your claim! To process your request, please provide the following missing information: " + missing_str + " Once we receive these details, we'll review your claim promptly."
+      - show("Missing fields:", missing_str)
+      - email.reply(reply_text)
+      - email.move("processed")
+      - show("Incomplete claim - replied with missing field requirements")
+
+  wrong_department:
+    actions:
+      - show("Email for different insurance department - routing")
+      - dept = classify(input_text=email.text, instruction="Select the department-email address that is most likely to be the correct one", categories=["car_insurance@acme.com", "home_insurance@acme.com", "life_insurance@acme.com", "health_insurance@acme.com", "pet_insurance@acme.com", "business_insurance@acme.com"])
+      - show("Department identified:", dept)
+      - email.forward(dept)
+      - email.reply("Your inquiry has been forwarded to " + dept + ". We will contact you shortly.")
+      - email.move("processed")
+
+  unclear:
+    actions:
+      - show("Unclear request - escalating to human support")
+      - email.enrich("Unclear request - requires human review")
+      - email.move("human_support")
+      - show("Email escalated to human support team")
+    edges:
+      - success == False: end (success=False, error_msg="Could not process unclear request")
+      - success == True: end (success=True)
+
+  handle_error:
+    actions:
+      - show("######################### Error_Msg:", error_msg, "#########################")

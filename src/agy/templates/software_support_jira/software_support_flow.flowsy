@@ -1,0 +1,64 @@
+name: Software Support Ticket Routing
+description: Classify Jira ticket descriptions and route handling
+context_in:
+  jira: JiraClient
+  issue_key: str
+  close_transition: str
+  assignee_a: str
+
+nodes:
+  fetch_ticket:
+    actions:
+      - issue = jira.get_issue(issue_key)
+      - ticket_text = sanitize_issue_text(issue)
+      - show("Fetched ticket:", issue.key, issue.status, issue.summary)
+    edges:
+      - success == False: handle_error
+      - True: classify_ticket
+
+  classify_ticket:
+    actions:
+      - ticket_type = classify(input_text=ticket_text, categories=["invalid_request", "faq_resolvable", "needs_specialist"], instruction_file="prompts/classify_ticket_type.md")
+      - show("Ticket type:", ticket_type, "confidence:", confidence)
+    edges:
+      - success == False: handle_error
+      - confidence < 0.70: assign_to_specialist
+      - ticket_type == "invalid_request": close_invalid
+      - ticket_type == "faq_resolvable": answer_from_faq
+      - True: assign_to_specialist
+
+  close_invalid:
+    actions:
+      - jira.add_comment(issue_key, "Ticket classified as invalid_request (invalid/misdirected). Closing ticket.")
+      - jira.transition(issue_key, close_transition)
+      - result = {"issue_key": issue.key, "ticket_type": "invalid_request", "action": "closed", "transition": close_transition}
+    edges:
+      - success == False: handle_error
+      - True: end(success=True, result=result)
+
+  answer_from_faq:
+    actions:
+      - faq = load_files_text("data/software_support_faq.md")
+      - answer = respond(input_text=ticket_text, instruction_file="prompts/answer_from_faq.md", augmentation=faq)
+      - jira.add_comment(issue_key, answer)
+      - result = {"issue_key": issue.key, "ticket_type": "faq_resolvable", "action": "answered", "answer_preview": answer[:160]}
+    edges:
+      - success == False: handle_error
+      - True: end(success=True, result=result)
+
+  assign_to_specialist:
+    actions:
+      - jira.assign(issue_key, assignee_a)
+      - assignment_comment = format_assignment_comment(ticket_type, assignee_a)
+      - jira.add_comment(issue_key, assignment_comment)
+      - result = {"issue_key": issue.key, "ticket_type": ticket_type, "action": "assigned", "assignee": assignee_a}
+    edges:
+      - success == False: handle_error
+      - True: end(success=True, result=result)
+
+  handle_error:
+    actions:
+      - show("Error while processing ticket:", error_msg)
+      - jira.add_comment(issue_key, "Automatic processing failed. Please review manually.")
+    edges:
+      - True: end(success=False, error_msg=error_msg)

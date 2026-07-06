@@ -1,0 +1,43 @@
+name: Email Routing Flow
+description: Classify emails and route to appropriate handlers
+
+context_in:
+  email: Email
+
+nodes:
+  classify_email:
+    actions:
+      - show("Classifying email...")
+      - category = classify(input_text=email.text, categories=["question", "complaint", "other"])
+      - show("Category:", category, "Confidence:", confidence)
+    edges:
+      - confidence < 0.8: manual_review
+      - category == "question": answer_question
+      - category == "complaint": handle_complaint
+      - category == "other": manual_review
+
+  answer_question:
+    actions:
+      - show("Generating FAQ response...")
+      - faq_data = load_files_text("data/faq.md")
+      - response = respond(input_text=email.text, instruction_file="prompts/answer_question.md", augmentation=faq_data)
+      - show("Response generated:", response)
+      - email.reply(response)
+      - email.move("processed")
+      - show("Question answered and email moved")
+      - end()
+
+  handle_complaint:
+    actions:
+      - show("Sending complaint acknowledgment...")
+      - reply_text = "Thank you for your feedback. Our team will review your concern and respond within 24 hours."
+      - email.reply(reply_text)
+      - email.move("complaints")
+      - show("Complaint acknowledged")
+      - end()
+
+  manual_review:
+    actions:
+      - show("Email requires manual review")
+      - email.move("manual_review")
+      - end()

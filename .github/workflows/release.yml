@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release tag format
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '${GITHUB_REF_NAME}' does not match vX.Y.Z format."
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: "pip"
+
+      - name: Install build dependencies
+        run: pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Check package metadata
+        run: twine check dist/*
+
+      - name: Extract release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION#v}"
+          export VERSION
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+
+          version = os.environ["VERSION"]
+          changelog_path = Path("CHANGELOG.md")
+          text = changelog_path.read_text(encoding="utf-8")
+
+          # Match headings like:
+          # - ## [0.6.2]
+          # - ## [0.6.2] - 2026-01-27
+          # Avoid \b after ']' because it's not a word boundary.
+          start = re.search(
+              rf"^## \[{re.escape(version)}\](?:\s*-\s*.*)?$",
+              text,
+              flags=re.MULTILINE,
+          )
+          if not start:
+              raise SystemExit(
+                  f"Missing changelog section for version {version} in CHANGELOG.md"
+              )
+
+          remainder = text[start.end():]
+          next_header = re.search(r"^## \[[^\]]+\].*$", remainder, flags=re.MULTILINE)
+          end_index = start.end() + (next_header.start() if next_header else len(remainder))
+          notes = text[start.start():end_index].strip()
+
+          if len(notes.splitlines()) < 2:
+              raise SystemExit(f"Changelog section for {version} is empty.")
+
+          Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
+          PY
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#v}"
+          TITLE="Release ${VERSION}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --title "${TITLE}" --notes-file release-notes.md
+          else
+            gh release create "${TAG}" --title "${TITLE}" --notes-file release-notes.md
+          fi
+
+      - name: Upload release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "${TAG}" dist/* --clobber

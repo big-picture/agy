@@ -1,0 +1,20 @@
+[project]
+name = "agy-email-routing-imap-smtp"
+version = "0.1.0"
+description = "Email routing flow using AGY with ImapSmtpEmailAccount"
+requires-python = ">=3.11"
+dependencies = ["agy>=0.8.1"]
+
+[tool.agy.llm]
+default_provider = "openai"
+default_model = "gpt-5-mini"
+default_params = {}
+
+[providers.openai]
+api_key_env = "OPENAI_API_KEY"
+
+[providers.anthropic]
+api_key_env = "ANTHROPIC_API_KEY"
+
+[providers.gemini]
+api_key_env = "GEMINI_API_KEY"

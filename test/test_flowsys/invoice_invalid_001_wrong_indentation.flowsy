@@ -1,0 +1,18 @@
+name: Invoice Processing Flow
+description: Extract invoice data from PDFs and write to spreadsheet
+context_in:
+  invoice: Invoice
+
+nodes:
+ extract_invoice_data:  # WRONG: 1 space instead of 2
+    actions:
+      - invoice_text = pdf2text(file_path=invoice.pdf_file)
+    edges:
+      - True: write_to_spreadsheet
+
+  write_to_spreadsheet:
+    actions:
+      - invoice.add_to_spreadsheet("data/invoices.xlsx")
+
+
+

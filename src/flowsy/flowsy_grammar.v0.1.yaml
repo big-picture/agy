@@ -1,0 +1,73 @@
+flowsy_version: 0.1
+
+# key_words
+#  flow: top_level element
+#  scalar: string
+#  dict: key->value map
+#  list: ordered list of elements
+#  key_value_pair: line with "key: value"
+#  indentation: per level number of spaces
+
+
+meta:
+  indentation: 2
+  dict_separator: ":"
+  list_bullet: "-"
+
+flow:
+  content_type: dict
+  fix_name_entries:
+    - name:
+      occurrence: "1"
+      content_type: scalar
+    - description:
+      occurrence: "?"
+      content_type: scalar
+    - context_in:
+      occurrence: "?"
+      content_type: dict context_in_element
+    - nodes:
+      occurrence: "1"
+      content_type: dict node
+
+context_in_element:
+  content_type: key_value_pair
+  parsing: left
+
+node:
+  content_type: dict
+  fix_name_entries:
+    - type:
+      occurrence: "?"
+      content_type: scalar
+    - agent:
+      occurrence: "?"
+      content_type: scalar
+    - requests:
+      occurrence: "?"
+      content_type: list request
+    - options:
+      occurrence: "?"
+      content_type: dict context_in_element
+    - output:
+      occurrence: "?"
+      content_type: scalar
+    - message:
+      occurrence: "?"
+      content_type: scalar
+    - actions:
+      occurrence: "?"
+      content_type: list action
+    - edges:
+      occurrence: "?"
+      content_type: list edge
+
+request:
+  content_type: scalar
+
+action:
+  content_type: scalar
+
+edge:
+  content_type: edge
+  parsing: right
