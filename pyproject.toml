@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agy"
-version = "1.0"
+version = "1.0.0"
 description = "An agent flow engine extremely easy to define in YAML-style"
 readme = "README.md"
 requires-python = ">=3.11"

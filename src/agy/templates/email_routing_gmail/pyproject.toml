@@ -3,7 +3,7 @@ name = "agy-email-routing-gmail"
 version = "0.1.0"
 description = "Email routing flow using AGY with GmailEmailAccount"
 requires-python = ">=3.11"
-dependencies = ["agy>=1.0"]
+dependencies = ["agy>=1.0.0"]
 
 [tool.agy.llm]
 default_provider = "openai"

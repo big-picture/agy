@@ -3,14 +3,14 @@
 Dieses Dokument beschreibt, was Anwender bei **Einbindung und Nutzung** anders
 machen müssen, wenn sie von der internen Entwicklungsversion
 `dev/agy-private` (Stand **0.8.1**) auf das **öffentliche Paket** `agy`
-(PyPI, **1.0**) wechseln.
+(PyPI, **1.0.0**) wechseln.
 
 ## Rollen der beiden Repositories
 
 | | **agy** (öffentlich) | **agy-private** (intern) |
 |---|---|---|
 | Zweck | PyPI-Paket, Templates, Tests, öffentliche Doku | Entwicklung, interne Notizen, Language Server, IDE-Extension |
-| Version | `1.0` | `0.8.1` |
+| Version | `1.0.0` | `0.8.1` |
 | Paket-Layout | `src/agy`, `src/flowsy` | `agy/`, `flowsy/` im Repo-Root |
 | Distribution | PyPI (`pip install agy`) | Git-Checkout / lokaler Pfad |
 | Lizenz | MIT | kein explizites PyPI-Metadatum |
@@ -57,7 +57,7 @@ uv tool install agy
 
 # Im Projekt
 uv add agy
-# oder in pyproject.toml: dependencies = ["agy>=1.0"]
+# oder in pyproject.toml: dependencies = ["agy>=1.0.0"]
 ```
 
 **Kein Git-SSH-Zugang nötig.** Email **und** Jira (`atlassian-python-api`) sind
@@ -87,7 +87,7 @@ agy = { git = "ssh://git@github.com/MaximilianVogel/agy.git" }
 
 ```toml
 [project]
-dependencies = ["agy>=1.0"]
+dependencies = ["agy>=1.0.0"]
 ```
 
 **Kein** `[tool.uv.sources]`-Block — PyPI ist die Standardquelle.
@@ -105,7 +105,7 @@ dependencies = ["agy>=1.0"]
 2. Dependency anpassen:
 
    ```toml
-   dependencies = ["agy>=1.0"]
+   dependencies = ["agy>=1.0.0"]
    ```
 
 3. Lockfile neu auflösen:
@@ -137,7 +137,7 @@ Repo. Für reine Flow-Ausführung ist das **nicht** erforderlich.
 
 ## 4. Nutzung im Anwendungscode — was gleich bleibt
 
-Diese Teile sind zwischen 0.8.1 (private) und 1.0 (öffentlich) **identisch**
+Diese Teile sind zwischen 0.8.1 (private) und 1.0.0 (öffentlich) **identisch**
 in der Anwender-Perspektive:
 
 ### Flow-Definition (`.flowsy`)
@@ -205,7 +205,7 @@ registrieren.
 
 ```bash
 cd mein_altes_projekt
-# pyproject.toml: Git-Source raus, dependencies = ["agy>=1.0"]
+# pyproject.toml: Git-Source raus, dependencies = ["agy>=1.0.0"]
 uv lock --upgrade-package agy
 uv sync
 uv run python main.py
@@ -217,7 +217,7 @@ uv run python main.py
  [project]
  dependencies = [
 -    "agy @ git+ssh://git@github.com/MaximilianVogel/agy.git",
-+    "agy>=1.0",
++    "agy>=1.0.0",
  ]
 ```
 
@@ -231,12 +231,12 @@ das PyPI-Paket.
 
 ## 7. Versionsstand und Kompatibilität
 
-- **agy-private 0.8.1** und **öffentliches agy 1.0** sind funktional auf
+- **agy-private 0.8.1** und **öffentliches agy 1.0.0** sind funktional auf
   demselben Feature-Stand (RecordSet, stochastische Nodes, Sub-Flows, Email/Jira).
-- Die öffentliche Version **1.0** ist vor allem der **PyPI-Release-Sprung** mit
+- Die öffentliche Version **1.0.0** ist vor allem der **PyPI-Release-Sprung** mit
   vereinfachter Dependency-Story (Integrationen im Core), nicht ein Breaking
   API-Redesign.
-- Empfehlung für neue Projekte: `agy>=1.0`.
+- Empfehlung für neue Projekte: `agy>=1.0.0`.
 
 Bei Unsicherheit nach dem Wechsel einmal validieren:
 

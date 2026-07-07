@@ -90,7 +90,7 @@ public package:
 
 ```toml
 [project]
-dependencies = ["agy>=1.0"]
+dependencies = ["agy>=1.0.0"]
 ```
 
 The Python import path is unchanged (`import agy`). See

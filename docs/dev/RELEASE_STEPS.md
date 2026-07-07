@@ -31,7 +31,7 @@ python -m zipfile -l dist/*.whl
 Create and push a semver tag:
 
 ```bash
-VERSION="1.0"
+VERSION="1.0.0"
 git tag "v${VERSION}"
 git push origin "v${VERSION}"
 ```
