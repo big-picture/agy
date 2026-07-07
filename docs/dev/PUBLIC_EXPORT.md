@@ -32,7 +32,7 @@ For downstream projects that used the private repository directly:
 3. Keep existing `.flowsy` files and Python imports unless they referenced
    private-only modules.
 4. If a project used the former private Git URL in a template `pyproject.toml`,
-   replace it with `dependencies = ["agy>=0.8.1"]`.
+   replace it with `dependencies = ["agy>=1.0"]`.
 
 The Python package import path remains `agy`; the source layout changed to
 `src/agy` only inside this repository.

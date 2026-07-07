@@ -7,6 +7,8 @@ import os
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from .env_config import ProviderKey, get_draft_only
+
 if TYPE_CHECKING:
     from .email import Email
 
@@ -20,6 +22,8 @@ class EmailAccount(ABC):
     Provides unified interface for fetching, searching, and sending emails
     across different providers (Graph, Gmail, Mock/File-based).
     """
+
+    PROVIDER_KEY: ProviderKey | None = None
 
     @abstractmethod
     def get_emails(
@@ -282,6 +286,12 @@ class EmailAccount(ABC):
         if draft_only:
             logger.info("Draft-only mode enabled by call parameter (draft_only=True)")
             return True
+        if self.PROVIDER_KEY is not None and get_draft_only(self.PROVIDER_KEY):
+            logger.info(
+                "Draft-only mode enabled by %s_EMAIL_DRAFT_ONLY",
+                self.PROVIDER_KEY.upper(),
+            )
+            return True
         env_raw = os.getenv("EMAIL_DRAFT_ONLY", "")
         env_enabled = env_raw.strip().lower() in ("true", "1", "yes")
         if env_enabled:
@@ -290,6 +300,16 @@ class EmailAccount(ABC):
                 env_raw,
             )
         return env_enabled
+
+    def _draft_only_reason(self, draft_only_param: bool) -> str | None:
+        """Return the env/param reason draft-only is active, or None."""
+        if draft_only_param:
+            return "draft_only=True"
+        if self.PROVIDER_KEY is not None and get_draft_only(self.PROVIDER_KEY):
+            return f"{self.PROVIDER_KEY.upper()}_EMAIL_DRAFT_ONLY"
+        if os.getenv("EMAIL_DRAFT_ONLY", "").strip().lower() in ("true", "1", "yes"):
+            return "EMAIL_DRAFT_ONLY"
+        return None
 
     def _log_outgoing_draft_redirect(
         self,
@@ -300,16 +320,8 @@ class EmailAccount(ABC):
         subject: str | None = None,
     ) -> None:
         """Log that an outgoing operation is being saved as draft instead of sent."""
-        from_env = os.getenv("EMAIL_DRAFT_ONLY", "").strip().lower() in (
-            "true",
-            "1",
-            "yes",
-        )
-        if draft_only_param:
-            reason = "draft_only=True"
-        elif from_env:
-            reason = "EMAIL_DRAFT_ONLY"
-        else:
+        reason = self._draft_only_reason(draft_only_param)
+        if reason is None:
             return
         logger.info(
             "Outgoing email redirected to drafts: operation=%s reason=%s "

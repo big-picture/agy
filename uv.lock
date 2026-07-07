@@ -9,7 +9,7 @@ resolution-markers = [
 
 [[package]]
 name = "agy"
-version = "0.8.1"
+version = "1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

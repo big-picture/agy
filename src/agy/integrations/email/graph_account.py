@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import logging
-import os
 import re
 from html import escape
 from importlib import resources
@@ -16,6 +15,7 @@ import requests
 from ._graph_api import GraphAPI
 from .account import EmailAccount
 from .email import Attachment, Email
+from .env_config import env_for
 from .html_utils import plain_to_html
 
 if TYPE_CHECKING:
@@ -59,6 +59,8 @@ def _as_str_list(value: Any) -> list[str]:
 class GraphEmailAccount(EmailAccount):
     """Microsoft Graph-backed email account."""
 
+    PROVIDER_KEY = "graph"
+
     GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 
     def __init__(
@@ -79,15 +81,16 @@ class GraphEmailAccount(EmailAccount):
         self.api = api or GraphAPI()
         resolved_user_email = (
             user_email
-            or os.getenv("USER_EMAIL")
-            or os.getenv("SHARED_MAILBOX_UPN")
+            or env_for("graph", "USER_EMAIL")
+            or env_for("graph", "SHARED_MAILBOX_UPN")
             or self.api._mailbox_upn
         )
         self.mailbox_type = mailbox_type
 
         if not resolved_user_email:
             raise ValueError(
-                "Missing user_email. Set USER_EMAIL or SHARED_MAILBOX_UPN in env."
+                "Missing user_email. Set GRAPH_USER_EMAIL or GRAPH_SHARED_MAILBOX_UPN "
+                "in env (or deprecated USER_EMAIL / SHARED_MAILBOX_UPN)."
             )
         self.user_email: str = resolved_user_email
 
@@ -317,7 +320,7 @@ class GraphEmailAccount(EmailAccount):
 
         from .email_safety import get_validator
 
-        is_valid, error_msg = get_validator().validate_forward(email.recipient)
+        is_valid, error_msg = get_validator("graph").validate_forward(email.recipient)
         if not is_valid:
             raise RuntimeError(f"Safety check failed: {error_msg}")
 
@@ -495,7 +498,7 @@ class GraphEmailAccount(EmailAccount):
         else:
             from .email_safety import get_validator
 
-            is_valid, error_msg = get_validator().validate_reply(
+            is_valid, error_msg = get_validator("graph").validate_reply(
                 email.sender or email.reply_to
             )
             if not is_valid:
@@ -563,7 +566,7 @@ class GraphEmailAccount(EmailAccount):
         else:
             from .email_safety import get_validator
 
-            is_valid, error_msg = get_validator().validate_forward(to)
+            is_valid, error_msg = get_validator("graph").validate_forward(to)
             if not is_valid:
                 raise RuntimeError(f"Safety check failed for forward: {error_msg}")
 

@@ -3,7 +3,7 @@ name = "agy-email-routing-imap-smtp"
 version = "0.1.0"
 description = "Email routing flow using AGY with ImapSmtpEmailAccount"
 requires-python = ">=3.11"
-dependencies = ["agy>=0.8.1"]
+dependencies = ["agy>=1.0"]
 
 [tool.agy.llm]
 default_provider = "openai"

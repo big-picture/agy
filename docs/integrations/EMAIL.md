@@ -314,21 +314,25 @@ For Microsoft 365 / Office 365 mailboxes using the Microsoft Graph API.
 
 ### Environment Variables
 
-| Variable             | Required | Description                                    |
-| -------------------- | -------- | ---------------------------------------------- |
-| `TENANT_ID`          | Yes      | Azure AD tenant ID                             |
-| `CLIENT_ID`          | Yes      | Azure AD application (client) ID               |
-| `CLIENT_SECRET`      | Yes      | Azure AD application client secret             |
-| `USER_EMAIL`         | No       | User principal name (email address)            |
-| `SHARED_MAILBOX_UPN` | No       | Shared mailbox UPN (alternative to USER_EMAIL) |
+| Variable                    | Required | Description                                    |
+| --------------------------- | -------- | ---------------------------------------------- |
+| `GRAPH_TENANT_ID`           | Yes      | Azure AD tenant ID                             |
+| `GRAPH_CLIENT_ID`           | Yes      | Azure AD application (client) ID               |
+| `GRAPH_CLIENT_SECRET`       | Yes      | Azure AD application client secret             |
+| `GRAPH_USER_EMAIL`          | No       | User principal name (email address)            |
+| `GRAPH_SHARED_MAILBOX_UPN`  | No       | Shared mailbox UPN (alternative to USER_EMAIL) |
+
+Deprecated fallbacks: `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `USER_EMAIL`, `SHARED_MAILBOX_UPN`.
 
 #### Example .env
 
 ```env
-TENANT_ID=12345678-1234-1234-1234-123456789012
-CLIENT_ID=abcdefgh-abcd-abcd-abcd-abcdefghijkl
-CLIENT_SECRET=your-client-secret-here
-USER_EMAIL=support@company.com
+GRAPH_TENANT_ID=12345678-1234-1234-1234-123456789012
+GRAPH_CLIENT_ID=abcdefgh-abcd-abcd-abcd-abcdefghijkl
+GRAPH_CLIENT_SECRET=your-client-secret-here
+GRAPH_USER_EMAIL=support@company.com
+GRAPH_ALLOWED_EMAIL_DOMAINS=company.com
+GRAPH_EMAIL_DRAFT_ONLY=true
 ```
 
 #### Usage
@@ -549,25 +553,33 @@ unauthorized recipients.
 
 ### Environment Variables
 
-| Variable                  | Default           | Description                                          |
-| ------------------------- | ----------------- | ---------------------------------------------------- |
-| `ALLOWED_EMAIL_DOMAINS`   | `big-picture.com` | Comma-separated list of allowed domains              |
-| `ALLOWED_EMAIL_ADDRESSES` | (empty)           | Comma-separated list of explicitly allowed addresses |
-| `EMAIL_DRAFT_ONLY`        | (unset)           | If `true`/`1`/`yes`, save sends/replies/forwards as drafts only (no outbound send) |
+Per provider (preferred):
+
+| Provider | Domains | Addresses | Draft-only |
+| -------- | ------- | --------- | ---------- |
+| Graph | `GRAPH_ALLOWED_EMAIL_DOMAINS` | `GRAPH_ALLOWED_EMAIL_ADDRESSES` | `GRAPH_EMAIL_DRAFT_ONLY` |
+| Gmail | `GMAIL_ALLOWED_EMAIL_DOMAINS` | `GMAIL_ALLOWED_EMAIL_ADDRESSES` | `GMAIL_EMAIL_DRAFT_ONLY` |
+| IMAP | `IMAP_ALLOWED_EMAIL_DOMAINS` | `IMAP_ALLOWED_EMAIL_ADDRESSES` | `IMAP_EMAIL_DRAFT_ONLY` |
+
+Deprecated global fallbacks: `ALLOWED_EMAIL_DOMAINS` (default `big-picture.com`),
+`ALLOWED_EMAIL_ADDRESSES`, `EMAIL_DRAFT_ONLY`.
 
 ### Example
 
 ```env
-ALLOWED_EMAIL_DOMAINS=company.com,partner.com,trusted-vendor.com
-ALLOWED_EMAIL_ADDRESSES=external-contact@other.com,vip@special.org
+GRAPH_ALLOWED_EMAIL_DOMAINS=company.com,partner.com
+GMAIL_ALLOWED_EMAIL_DOMAINS=gmail.com,company.com
+IMAP_ALLOWED_EMAIL_DOMAINS=company.com
+GRAPH_EMAIL_DRAFT_ONLY=true
 ```
 
-Emails can only be sent to recipients matching:
+Emails can only be sent to recipients matching the **active account's** allowlist:
 
-- An address in `ALLOWED_EMAIL_ADDRESSES`, OR
-- A domain in `ALLOWED_EMAIL_DOMAINS`
+- An address in `{PROVIDER}_ALLOWED_EMAIL_ADDRESSES`, OR
+- A domain in `{PROVIDER}_ALLOWED_EMAIL_DOMAINS`
 
-When **draft-only** mode is active (`EMAIL_DRAFT_ONLY` or per-call `draft_only=True` on
+When **draft-only** mode is active (`{PROVIDER}_EMAIL_DRAFT_ONLY`, deprecated
+`EMAIL_DRAFT_ONLY`, or per-call `draft_only=True` on
 `email.send()`, `email.reply()`, `email.reply_all()`, `email.forward()`), messages are
 saved as drafts instead of sent; allowlist checks are skipped for those operations so
 staging tests can build drafts for any address.
@@ -576,7 +588,7 @@ To reset safety settings (e.g., in tests):
 
 ```python
 from agy.integrations.email.email_safety import reset_validator
-reset_validator()
+reset_validator("graph")  # or None for all providers
 ```
 
 ---

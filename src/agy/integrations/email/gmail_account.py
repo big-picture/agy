@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 class GmailEmailAccount(EmailAccount):
     """Gmail-backed email account using OAuth user credentials."""
 
+    PROVIDER_KEY = "gmail"
+
     def __init__(self, api: GmailAPI | None = None) -> None:
         """
         Initialize GmailEmailAccount.
@@ -200,7 +202,7 @@ class GmailEmailAccount(EmailAccount):
 
         from .email_safety import get_validator
 
-        is_valid, error_msg = get_validator().validate_forward(email.recipient)
+        is_valid, error_msg = get_validator("gmail").validate_forward(email.recipient)
         if not is_valid:
             raise RuntimeError(f"Safety check failed: {error_msg}")
 
@@ -295,7 +297,7 @@ class GmailEmailAccount(EmailAccount):
         else:
             from .email_safety import get_validator
 
-            is_valid, error_msg = get_validator().validate_reply(
+            is_valid, error_msg = get_validator("gmail").validate_reply(
                 email.sender or email.reply_to
             )
             if not is_valid:
@@ -342,7 +344,7 @@ class GmailEmailAccount(EmailAccount):
         else:
             from .email_safety import get_validator
 
-            is_valid, error_msg = get_validator().validate_forward(to)
+            is_valid, error_msg = get_validator("gmail").validate_forward(to)
             if not is_valid:
                 raise RuntimeError(f"Safety check failed for forward: {error_msg}")
 

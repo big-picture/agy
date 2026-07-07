@@ -8,6 +8,8 @@ import re
 
 from dotenv import load_dotenv
 
+from .env_config import ProviderKey, get_safety_config
+
 # Load environment variables
 load_dotenv()
 
@@ -21,6 +23,8 @@ class EmailSafetyValidator:
         self,
         allowed_domains: list[str] | None = None,
         allowed_addresses: list[str] | None = None,
+        *,
+        provider: ProviderKey | None = None,
     ):
         """
         Initialize EmailSafetyValidator.
@@ -28,22 +32,33 @@ class EmailSafetyValidator:
         Args:
             allowed_domains: List of allowed email domains (e.g., ["big-picture.com"])
             allowed_addresses: List of specific allowed email addresses.
+            provider: When set, load allowlists from {PROVIDER}_ALLOWED_EMAIL_* env.
         """
-        if allowed_domains is None:
+        if allowed_domains is None and allowed_addresses is None and provider is not None:
+            config = get_safety_config(provider)
+            allowed_domains = config["allowed_domains"]
+            allowed_addresses = config["allowed_addresses"]
+        elif allowed_domains is None:
             env_domains = os.getenv("ALLOWED_EMAIL_DOMAINS", "big-picture.com")
             allowed_domains = [d.strip() for d in env_domains.split(",") if d.strip()]
 
-        if allowed_addresses is None:
+        if allowed_addresses is None and provider is None:
             env_addresses = os.getenv("ALLOWED_EMAIL_ADDRESSES", "")
             allowed_addresses = [
                 a.strip() for a in env_addresses.split(",") if a.strip()
             ]
+        elif allowed_addresses is None and provider is not None:
+            allowed_addresses = []
 
-        self.allowed_domains = [domain.lower() for domain in allowed_domains]
-        self.allowed_addresses = [address.lower() for address in allowed_addresses]
+        self.allowed_domains = [domain.lower() for domain in (allowed_domains or [])]
+        self.allowed_addresses = [
+            address.lower() for address in (allowed_addresses or [])
+        ]
+        self.provider = provider
 
         logger.info(
-            "EmailSafetyValidator initialized with %s allowed domains and %s allowed addresses",
+            "EmailSafetyValidator initialized (%s) with %s allowed domains and %s allowed addresses",
+            provider or "global",
             len(self.allowed_domains),
             len(self.allowed_addresses),
         )
@@ -121,17 +136,27 @@ class EmailSafetyValidator:
 
 
 _global_validator: EmailSafetyValidator | None = None
+_provider_validators: dict[ProviderKey, EmailSafetyValidator] = {}
 
 
-def get_validator() -> EmailSafetyValidator:
-    """Get or create the global EmailSafetyValidator instance."""
+def get_validator(provider: ProviderKey | None = None) -> EmailSafetyValidator:
+    """Get or create an EmailSafetyValidator for a provider (or legacy global)."""
     global _global_validator
-    if _global_validator is None:
-        _global_validator = EmailSafetyValidator()
-    return _global_validator
+    if provider is None:
+        if _global_validator is None:
+            _global_validator = EmailSafetyValidator()
+        return _global_validator
+
+    if provider not in _provider_validators:
+        _provider_validators[provider] = EmailSafetyValidator(provider=provider)
+    return _provider_validators[provider]
 
 
-def reset_validator() -> None:
-    """Reset the global validator (useful for testing)."""
+def reset_validator(provider: ProviderKey | None = None) -> None:
+    """Reset cached validator(s) (useful for testing)."""
     global _global_validator
-    _global_validator = None
+    if provider is None:
+        _global_validator = None
+        _provider_validators.clear()
+        return
+    _provider_validators.pop(provider, None)

@@ -7,16 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0] - 2026-07-07
+
 ### Added
 
+- **First public PyPI release** of Agy under the MIT license.
 - Stochastic `requests:` entries can now be Python expressions, including
   f-strings, evaluated with the current flow context before `agent.run(...)`.
+- Public migration guide for projects moving from `agy-private` 0.8.1:
+  `docs/AGY_VS_AGY_PRIVATE.md`.
 
 ### Changed
 
 - Stochastic agents now implement `run(...)` as their execution method. FLOWSY
   keeps `requests:` as the list of natural-language instructions passed to the
   agent.
+- Email and Jira integrations are included in the core package dependencies;
+  separate `--extra atlassian` / `--extra email` installs are no longer required
+  for end users.
+- Public package repository uses a `src/`-layout (`src/agy`, `src/flowsy`).
 
 ## [0.8.1] - 2026-06-03
 

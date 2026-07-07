@@ -90,12 +90,12 @@ public package:
 
 ```toml
 [project]
-dependencies = ["agy>=0.8.1"]
+dependencies = ["agy>=1.0"]
 ```
 
 The Python import path is unchanged (`import agy`). See
-[docs/dev/PUBLIC_EXPORT.md](docs/dev/PUBLIC_EXPORT.md) for the public export
-policy.
+[docs/AGY_VS_AGY_PRIVATE.md](docs/AGY_VS_AGY_PRIVATE.md) for a full migration
+guide from `agy-private` 0.8.1.
 
 ### Define A Flow (Email)
 

@@ -36,11 +36,19 @@ Both are required when using `from_env()`.
 
 ### Microsoft Graph (`GraphEmailAccount` / `GraphAPI`)
 
-- `TENANT_ID` (required)
-- `CLIENT_ID` (required)
-- `CLIENT_SECRET` (required)
-- `USER_EMAIL` (optional, mailbox resolution)
-- `SHARED_MAILBOX_UPN` (optional, mailbox resolution)
+Preferred (provider-prefixed):
+
+- `GRAPH_TENANT_ID` (required)
+- `GRAPH_CLIENT_ID` (required)
+- `GRAPH_CLIENT_SECRET` (required)
+- `GRAPH_USER_EMAIL` (optional, mailbox resolution)
+- `GRAPH_SHARED_MAILBOX_UPN` (optional, mailbox resolution)
+- `GRAPH_ALLOWED_EMAIL_DOMAINS`, `GRAPH_ALLOWED_EMAIL_ADDRESSES` (safety)
+- `GRAPH_EMAIL_DRAFT_ONLY` (optional)
+
+Deprecated fallbacks (still read with `DeprecationWarning`):
+
+- `TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`, `USER_EMAIL`, `SHARED_MAILBOX_UPN`
 
 ### Gmail (`GmailEmailAccount` / `GmailAPI`)
 
@@ -50,6 +58,8 @@ Both are required when using `from_env()`.
 - `GMAIL_TOKEN_FILE` (default: `token.json`)
 - `GMAIL_USER` (default: `me`)
 - `GMAIL_SCOPES` (optional, space-separated)
+- `GMAIL_ALLOWED_EMAIL_DOMAINS`, `GMAIL_ALLOWED_EMAIL_ADDRESSES` (safety)
+- `GMAIL_EMAIL_DRAFT_ONLY` (optional)
 
 ### IMAP/SMTP (`ImapSmtpEmailAccount`)
 
@@ -61,15 +71,18 @@ Both are required when using `from_env()`.
 - `SMTP_PORT` (default: `465`)
 - `SMTP_USER` (default: `IMAP_USER`)
 - `SMTP_PASSWORD` (default: `IMAP_PASSWORD`)
+- `IMAP_ALLOWED_EMAIL_DOMAINS`, `IMAP_ALLOWED_EMAIL_ADDRESSES` (safety)
+- `IMAP_EMAIL_DRAFT_ONLY` (optional)
 
 ## Email Safety
 
-Used by `email_safety` validator:
+Per-provider allowlists via `{GRAPH|GMAIL|IMAP}_ALLOWED_EMAIL_DOMAINS` and
+`{GRAPH|GMAIL|IMAP}_ALLOWED_EMAIL_ADDRESSES`. Deprecated global fallbacks:
+`ALLOWED_EMAIL_DOMAINS` (default: `big-picture.com`), `ALLOWED_EMAIL_ADDRESSES`.
 
-- `ALLOWED_EMAIL_DOMAINS` (default: `big-picture.com`)
-- `ALLOWED_EMAIL_ADDRESSES` (default: empty)
+Draft-only mode: `{PROVIDER}_EMAIL_DRAFT_ONLY` or deprecated global `EMAIL_DRAFT_ONLY`.
 
-These guard send/reply/forward operations.
+These guard send/reply/forward operations (skipped when draft-only saves locally).
 
 ## Project Root Override
 

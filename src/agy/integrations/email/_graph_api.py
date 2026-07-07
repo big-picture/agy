@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any
 
 import requests
+
+from .env_config import get_graph_credentials
 
 # Graph API base URL and scope
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
@@ -57,16 +58,16 @@ class GraphAPI:
     ):
         """Initialize GraphAPI with credentials (env defaults allowed)."""
         self._cached_token: str | None = None
-        self._tenant_id = tenant_id or os.getenv("TENANT_ID")
-        self._client_id = client_id or os.getenv("CLIENT_ID")
-        self._client_secret = client_secret or os.getenv("CLIENT_SECRET")
-        self._mailbox_upn = (
-            mailbox_upn or os.getenv("SHARED_MAILBOX_UPN") or os.getenv("USER_EMAIL")
-        )
+        creds = get_graph_credentials()
+        self._tenant_id = tenant_id or creds["tenant_id"]
+        self._client_id = client_id or creds["client_id"]
+        self._client_secret = client_secret or creds["client_secret"]
+        self._mailbox_upn = mailbox_upn or creds["mailbox_upn"]
 
         if not self._tenant_id or not self._client_id or not self._client_secret:
             raise ValueError(
-                "Missing required credentials: TENANT_ID, CLIENT_ID, CLIENT_SECRET (env or init args)."
+                "Missing required credentials: GRAPH_TENANT_ID, GRAPH_CLIENT_ID, "
+                "GRAPH_CLIENT_SECRET (or deprecated TENANT_ID, CLIENT_ID, CLIENT_SECRET)."
             )
 
     # ------------------------------------------------------------------ Auth

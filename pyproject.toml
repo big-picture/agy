@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agy"
-version = "0.8.1"
-description = "A small agent flow engine for deterministic and agentic workflows"
+version = "1.0"
+description = "An agent flow engine extremely easy to define in YAML-style"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
@@ -14,18 +14,22 @@ authors = [
     { name = "Maximilian Vogel" },
 ]
 maintainers = [
-    { name = "Maximilian Vogel" },
+    { name = "Maximilian Vogel", email = "maximilian.vogel@big-picture.com" },
+    { name = "Thomas Bergmann", email = "thomas.bergmann@big-picture.com" },
+    { name = "Leonid Sokolov", email = "leonid.sokolov@big-picture.com" },
 ]
 keywords = [
     "agents",
     "automation",
+    "flow description language",
     "flows",
     "llm",
     "orchestration",
     "workflow",
+    "mail processing",    
 ]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "License :: OSI Approved :: MIT License",
@@ -71,10 +75,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/MaximilianVogel/agy"
-Repository = "https://github.com/MaximilianVogel/agy"
-Issues = "https://github.com/MaximilianVogel/agy/issues"
-Documentation = "https://github.com/MaximilianVogel/agy#readme"
+Homepage = "https://github.com/big-picture/agy"
+Repository = "https://github.com/big-picture/agy"
+Issues = "https://github.com/big-picture/agy/issues"
+Documentation = "https://github.com/big-picture/agy#readme"
 
 [project.scripts]
 agy = "agy.cli:main"

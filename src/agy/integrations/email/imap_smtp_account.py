@@ -93,6 +93,8 @@ def _get_email_body(msg: email.message.Message) -> tuple[str, str]:
 class ImapSmtpEmailAccount(EmailAccount):
     """Email account using IMAP for reading and SMTP for sending."""
 
+    PROVIDER_KEY = "imap"
+
     def __init__(
         self,
         *,
@@ -407,7 +409,7 @@ class ImapSmtpEmailAccount(EmailAccount):
 
         from .email_safety import get_validator
 
-        is_valid, error_msg = get_validator().validate_forward(email_obj.recipient)
+        is_valid, error_msg = get_validator("imap").validate_forward(email_obj.recipient)
         if not is_valid:
             raise RuntimeError(f"Safety check failed: {error_msg}")
 
@@ -499,7 +501,7 @@ class ImapSmtpEmailAccount(EmailAccount):
         else:
             from .email_safety import get_validator
 
-            is_valid, error_msg = get_validator().validate_reply(reply_to)
+            is_valid, error_msg = get_validator("imap").validate_reply(reply_to)
             if not is_valid:
                 raise RuntimeError(f"Safety check failed for reply: {error_msg}")
 
@@ -572,7 +574,7 @@ class ImapSmtpEmailAccount(EmailAccount):
         else:
             from .email_safety import get_validator
 
-            is_valid, error_msg = get_validator().validate_forward(to)
+            is_valid, error_msg = get_validator("imap").validate_forward(to)
             if not is_valid:
                 raise RuntimeError(f"Safety check failed for forward: {error_msg}")
 
