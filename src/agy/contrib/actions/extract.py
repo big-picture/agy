@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from collections.abc import Callable
@@ -73,6 +74,84 @@ def _normalize_extracted_values(
     return out
 
 
+def _build_extract_prompt(
+    input_text: str,
+    values_to_extract: dict[str, type[Any] | str],
+    instruction: str | None,
+    instruction_file: str | None,
+    augmentation: str | None,
+) -> str:
+    template_path = (
+        Path(__file__).parent.parent
+        / "prompt_contents"
+        / "generic_extract_instruction.md"
+    )
+    template = template_path.read_text(encoding="utf-8")
+
+    if instruction:
+        specific_instructions = instruction
+    elif instruction_file:
+        file_path = find_file_in_standard_dirs(instruction_file)
+        specific_instructions = file_path.read_text(encoding="utf-8")
+    else:
+        specific_instructions = "Use just the generic extraction guidelines."
+
+    schema_lines = []
+    for key, type_hint in values_to_extract.items():
+        if isinstance(type_hint, str):
+            type_repr = type_hint
+        elif hasattr(type_hint, "__name__"):
+            type_repr = type_hint.__name__  # type: ignore[attr-defined]
+        else:
+            type_repr = str(type_hint)
+        schema_lines.append(f'  "{key}": {type_repr},\n')
+    schema_str = "".join(schema_lines)
+
+    augmentation_text = augmentation if augmentation else "None provided"
+    return template.format(
+        specific_instructions=specific_instructions,
+        augmentation=augmentation_text,
+        value_schema=schema_str,
+        input_text=input_text,
+    )
+
+
+def _parse_extract_response(
+    result: str,
+    values_to_extract: dict[str, type[Any] | str],
+) -> dict[str, Any]:
+    _agy_logger.debug(f"Extract model response:\n{result}")
+
+    result_clean = result.strip()
+    if result_clean.startswith("```"):
+        lines = result_clean.split("\n")
+        result_clean = "\n".join(lines[1:-1]) if len(lines) > 2 else result_clean
+
+    try:
+        parsed = json.loads(result_clean)
+    except json.JSONDecodeError as exc:
+        _agy_logger.debug(f"Extract JSON parsing failed. Raw response: {result_clean}")
+        raise ValueError(f"Failed to parse JSON response: {exc}")
+
+    if not isinstance(parsed, dict):
+        raise ValueError("Extract must return a JSON object")
+    if "confidence" not in parsed:
+        raise ValueError("Extract response must contain 'confidence'")
+    if parsed["confidence"] is None:
+        raise ValueError("Extract response must contain non-null 'confidence'")
+
+    confidence = float(parsed["confidence"])
+    if not (0 <= confidence <= 1):
+        raise ValueError(f"Confidence must be between 0 and 1, got {confidence}")
+
+    extracted_values = _normalize_extracted_values(parsed, values_to_extract)
+    _agy_logger.debug(
+        "Extract normalized result keys: %s", list(extracted_values.keys())
+    )
+
+    return {"result": extracted_values, "context": {"confidence": confidence}}
+
+
 def extract(
     input_text: str,
     values_to_extract: dict[str, type[Any] | str],
@@ -91,77 +170,47 @@ def extract(
     try:
         from agy.contrib.llm_call import LLMCall
 
-        llm = LLMCall()
-        call_func = model_call if model_call else llm.model_call
+        call_func = model_call if model_call else LLMCall().model_call
 
-        template_path = (
-            Path(__file__).parent.parent
-            / "prompt_contents"
-            / "generic_extract_instruction.md"
+        prompt = _build_extract_prompt(
+            input_text, values_to_extract, instruction, instruction_file, augmentation
         )
-        template = template_path.read_text(encoding="utf-8")
-
-        if instruction:
-            specific_instructions = instruction
-        elif instruction_file:
-            file_path = find_file_in_standard_dirs(instruction_file)
-            specific_instructions = file_path.read_text(encoding="utf-8")
-        else:
-            specific_instructions = "Use just the generic extraction guidelines."
-
-        schema_lines = []
-        for key, type_hint in values_to_extract.items():
-            if isinstance(type_hint, str):
-                type_repr = type_hint
-            elif hasattr(type_hint, "__name__"):
-                type_repr = type_hint.__name__  # type: ignore[attr-defined]
-            else:
-                type_repr = str(type_hint)
-            schema_lines.append(f'  "{key}": {type_repr},\n')
-        schema_str = "".join(schema_lines)
-
-        augmentation_text = augmentation if augmentation else "None provided"
-        prompt = template.format(
-            specific_instructions=specific_instructions,
-            augmentation=augmentation_text,
-            value_schema=schema_str,
-            input_text=input_text,
-        )
-
         _agy_logger.debug(f"Extract prompt:\n{prompt}")
-        result = call_func(prompt)
-        _agy_logger.debug(f"Extract model response:\n{result}")
 
-        result_clean = result.strip()
-        if result_clean.startswith("```"):
-            lines = result_clean.split("\n")
-            result_clean = "\n".join(lines[1:-1]) if len(lines) > 2 else result_clean
+        return _parse_extract_response(call_func(prompt), values_to_extract)
+    except Exception as exc:  # pylint: disable=broad-except
+        _agy_logger.error(f"Extract failed: {exc}")
+        raise
 
-        try:
-            parsed = json.loads(result_clean)
-        except json.JSONDecodeError as exc:
-            _agy_logger.debug(
-                f"Extract JSON parsing failed. Raw response: {result_clean}"
-            )
-            raise ValueError(f"Failed to parse JSON response: {exc}")
 
-        if not isinstance(parsed, dict):
-            raise ValueError("Extract must return a JSON object")
-        if "confidence" not in parsed:
-            raise ValueError("Extract response must contain 'confidence'")
-        if parsed["confidence"] is None:
-            raise ValueError("Extract response must contain non-null 'confidence'")
+async def extract_async(
+    input_text: str,
+    values_to_extract: dict[str, type[Any] | str],
+    instruction: str | None = None,
+    instruction_file: str | None = None,
+    augmentation: str | None = None,
+    context: dict[str, Any] | None = None,
+    model_call: Callable | None = None,
+) -> dict[str, Any]:
+    """Async counterpart of :func:`extract`.
 
-        confidence = float(parsed["confidence"])
-        if not (0 <= confidence <= 1):
-            raise ValueError(f"Confidence must be between 0 and 1, got {confidence}")
+    ``model_call`` may be sync or async; both are awaited correctly.
+    """
+    try:
+        from agy.contrib.llm_call import LLMCall
 
-        extracted_values = _normalize_extracted_values(parsed, values_to_extract)
-        _agy_logger.debug(
-            "Extract normalized result keys: %s", list(extracted_values.keys())
+        call_func = model_call if model_call else LLMCall().amodel_call
+
+        prompt = _build_extract_prompt(
+            input_text, values_to_extract, instruction, instruction_file, augmentation
         )
+        _agy_logger.debug(f"Extract prompt:\n{prompt}")
 
-        return {"result": extracted_values, "context": {"confidence": confidence}}
+        result = call_func(prompt)
+        if inspect.isawaitable(result):
+            result = await result
+
+        return _parse_extract_response(result, values_to_extract)
     except Exception as exc:  # pylint: disable=broad-except
         _agy_logger.error(f"Extract failed: {exc}")
         raise
