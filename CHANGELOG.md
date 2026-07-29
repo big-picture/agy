@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-29
+
+### Added
+
+- Native async LLM calls for OpenAI, Azure OpenAI, Gemini, and Anthropic,
+  exposed through `LLMCall.amodel_call()`.
+- `extract_async()` for structured extraction with either synchronous or
+  asynchronous model callables.
+
+### Changed
+
+- Provider clients are cached to reuse connection pools; async clients are
+  scoped per event loop.
+- Synchronous custom model callables invoked through `amodel_call()` are
+  offloaded to a worker thread to avoid blocking the event loop.
+
 ## [1.0.0] - 2026-07-07
 
 ### Added
