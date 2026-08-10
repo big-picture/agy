@@ -347,33 +347,56 @@ account = GraphEmailAccount()
 account = GraphEmailAccount(user_email="support@company.com")
 ```
 
-#### Nested Folders
+#### Nested Folders and Well-known Names
 
-GraphEmailAccount supports nested folder paths using `/` as separator:
+Prefer Microsoft Graph well-known folder names for system folders. They are
+locale-independent and resolve via Graph's well-known endpoint instead of
+localized display names:
 
 ```python
-# Top-level folder
-emails = account.get_emails(folders=["Inbox"])
+# Canonical well-known names (recommended for system folders)
+emails = account.get_emails(folders=["inbox"])
+email.move("deleteditems")
+account.create_draft(email, "drafts")
+sent = account.get_emails(folders=["sentitems"])
+```
 
-# Nested folders (e.g., logistics/logistics_inbox)
+Supported canonical well-known names:
+
+`archive`, `clutter`, `conflicts`, `conversationhistory`, `deleteditems`,
+`drafts`, `inbox`, `junkemail`, `localfailures`, `msgfolderroot`, `outbox`,
+`recoverableitemsdeletions`, `scheduled`, `searchfolders`, `sentitems`,
+`serverfailures`, `syncissues`.
+
+Friendly aliases for simple system-folder references also work and normalize to
+a canonical well-known name:
+
+- `sent`, `Sent Items`, `Gesendete Elemente` → `sentitems`
+- `deleted`, `trash`, `Gelöschte Elemente`, `Papierkorb` → `deleteditems`
+- `Entwürfe` → `drafts`
+- `Posteingang` → `inbox`
+- `junk`, `spam`, `Junk Email`, `Junk-E-Mail` → `junkemail`
+- `Postausgang` → `outbox`
+
+Custom folders continue to use display-name paths with `/` as the segment
+separator:
+
+```python
+# Nested custom folders (matched by displayName per path segment)
 emails = account.get_emails(folders=["logistics/logistics_inbox"])
-
-# Multiple nested paths
 emails = account.get_emails(folders=[
     "Projects/Active/2024",
     "logistics/processed"
 ])
-
-# Move to nested folder
 email.move("Archive/2024/January")
 ```
 
-**Supported aliases** (work at any level):
+Notes:
 
-- `sent` → "Sent Items"
-- `deleted`, `trash` → "Deleted Items"
-- `junk`, `spam` → "Junk Email"
-- German: `posteingang`, `gesendete elemente`, `papierkorb`, etc.
+- Aliases apply only to simple system-folder references, not to each segment of a
+  nested custom path.
+- A slash inside a single custom folder `displayName` is not supported by path
+  traversal; rename such folders before using them in a display-name path.
 
 ---
 
