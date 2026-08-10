@@ -139,6 +139,27 @@ def test_graph_find_emails(graph_account):
     assert isinstance(emails, list)
 
 
+@pytest.mark.email_integration
+@pytest.mark.parametrize(
+    "folder_name",
+    ["inbox", "drafts", "sentitems", "deleteditems"],
+)
+def test_graph_resolves_core_well_known_folders(graph_account, folder_name):
+    """Read-only check that core well-known folder names resolve."""
+    print(f"\n=== Test: well-known folder '{folder_name}' ===")
+
+    folder = graph_account.api.get_folder_by_reference(
+        folder_name,
+        mailbox_upn=graph_account.user_email,
+    )
+    assert folder is not None
+    assert isinstance(folder.get("id"), str)
+    assert folder["id"]
+    assert isinstance(folder.get("displayName"), str)
+    assert folder["displayName"]
+    print(f"  Resolved {folder_name!r} -> {folder['displayName']!r} ({folder['id'][:20]}...)")
+
+
 # =============================================================================
 # Comprehensive End-to-End Test
 # =============================================================================

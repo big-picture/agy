@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Full support for Microsoft Graph canonical well-known mail folder names
+  (`inbox`, `sentitems`, `deleteditems`, `drafts`, `conversationhistory`,
+  `syncissues`, and the remaining official well-known names).
+- `GraphAPI.get_folder_by_reference(...)` returns the resolved Graph mailFolder
+  object (`id`, localized `displayName`, and related metadata).
+- Public `GraphWellKnownFolder` string enum provides discoverable, typo-safe
+  constants while preserving compatibility with custom string folder paths.
+
+### Changed
+
+- `GraphAPI.get_folder_id_by_name(...)` now delegates to
+  `get_folder_by_reference(...)` while keeping the existing `str | None`
+  contract and alias compatibility.
+
 ## [1.1.0] - 2026-07-29
 
 ### Added

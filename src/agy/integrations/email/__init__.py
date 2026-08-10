@@ -5,6 +5,7 @@ Public API:
     Attachment - Email attachment dataclass
     EmailAccount - Abstract base class for email accounts
     GraphEmailAccount - Microsoft Graph implementation
+    GraphWellKnownFolder - Microsoft Graph system folder names
     GmailEmailAccount - Gmail implementation
     ImapSmtpEmailAccount - Generic IMAP/SMTP implementation
     MockEmailAccount - File-based mock implementation
@@ -20,6 +21,7 @@ from .mock_account import MockEmailAccount
 # (e.g., google-auth) from breaking lightweight imports like MockEmailAccount.
 _LAZY_EXPORTS = {
     "GraphEmailAccount": ".graph_account",
+    "GraphWellKnownFolder": "._graph_api",
     "GmailEmailAccount": ".gmail_account",
     "ImapSmtpEmailAccount": ".imap_smtp_account",
 }
@@ -41,6 +43,7 @@ __all__ = [
     "Attachment",
     "EmailAccount",
     "GraphEmailAccount",
+    "GraphWellKnownFolder",
     "GmailEmailAccount",
     "ImapSmtpEmailAccount",
     "MockEmailAccount",

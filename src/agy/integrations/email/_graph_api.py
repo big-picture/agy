@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from enum import StrEnum
 from typing import Any
 
 import requests
@@ -16,6 +17,62 @@ GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 SCOPE = "https://graph.microsoft.com/.default"
 
 logger = logging.getLogger(__name__)
+
+
+class GraphWellKnownFolder(StrEnum):
+    """Locale-independent Microsoft Graph system folder names."""
+
+    ARCHIVE = "archive"
+    CLUTTER = "clutter"
+    CONFLICTS = "conflicts"
+    CONVERSATION_HISTORY = "conversationhistory"
+    DELETED_ITEMS = "deleteditems"
+    DRAFTS = "drafts"
+    INBOX = "inbox"
+    JUNK_EMAIL = "junkemail"
+    LOCAL_FAILURES = "localfailures"
+    MESSAGE_FOLDER_ROOT = "msgfolderroot"
+    OUTBOX = "outbox"
+    RECOVERABLE_ITEMS_DELETIONS = "recoverableitemsdeletions"
+    SCHEDULED = "scheduled"
+    SEARCH_FOLDERS = "searchfolders"
+    SENT_ITEMS = "sentitems"
+    SERVER_FAILURES = "serverfailures"
+    SYNC_ISSUES = "syncissues"
+
+
+# Official Microsoft Graph well-known folder names (locale-independent).
+# See: https://learn.microsoft.com/en-us/graph/api/resources/mailfolder
+_WELL_KNOWN_FOLDER_NAMES = frozenset(folder.value for folder in GraphWellKnownFolder)
+
+# Friendly / localized aliases that normalize to a well-known name.
+_WELL_KNOWN_FOLDER_ALIASES = {
+    "posteingang": "inbox",
+    "sent items": "sentitems",
+    "sent": "sentitems",
+    "gesendete elemente": "sentitems",
+    "deleted items": "deleteditems",
+    "deleted": "deleteditems",
+    "trash": "deleteditems",
+    "gelöschte elemente": "deleteditems",
+    "papierkorb": "deleteditems",
+    "entwürfe": "drafts",
+    "junk email": "junkemail",
+    "junk": "junkemail",
+    "junk-e-mail": "junkemail",
+    "spam": "junkemail",
+    "postausgang": "outbox",
+}
+
+
+def _canonical_well_known_folder_name(folder_reference: str) -> str | None:
+    """Normalize a simple folder reference to a Graph well-known name."""
+    normalized = folder_reference.strip().casefold()
+    if not normalized:
+        return None
+    if normalized in _WELL_KNOWN_FOLDER_NAMES:
+        return normalized
+    return _WELL_KNOWN_FOLDER_ALIASES.get(normalized)
 
 
 def _json_dict(resp: requests.Response) -> dict[str, Any]:
@@ -572,57 +629,35 @@ class GraphAPI:
         logger.info("Copied %s/%s attachment(s)", success_count, len(attachments))
         return success_count == len(attachments)
 
-    def get_folder_id_by_name(
+    def get_folder_by_reference(
         self,
-        folder_name: str,
+        folder_reference: str,
         *,
         mailbox_type: str = "personal",
         mailbox_upn: str | None = None,
-    ) -> str | None:
+    ) -> dict[str, Any] | None:
         """
-        Get folder ID by folder name or path.
+        Resolve a folder by well-known name, alias, display name, or nested path.
 
         Supports:
-        - Simple names: "Inbox", "Sent Items", "logistics"
+        - Canonical well-known names: "inbox", "sentitems", "deleteditems"
+        - Friendly aliases: "sent", "trash", "Posteingang"
+        - Simple display names: "logistics"
         - Nested paths: "logistics/logistics_inbox", "Projects/Active/2024"
-        - Aliases: "sent" → "Sent Items", "trash" → "Deleted Items"
+
+        Nested path segments are matched by displayName. A slash inside a single
+        custom displayName is not supported.
 
         Args:
-            folder_name: Folder name or path (use "/" for nested folders)
+            folder_reference: Folder name or path (use "/" for nested folders)
             mailbox_type: "personal" or "shared"
             mailbox_upn: User principal name for the mailbox
 
         Returns:
-            Folder ID or None if not found
+            Final Graph mailFolder object, or None if not found
         """
         mailbox_upn = mailbox_upn or self._mailbox_upn
-        headers = self._get_headers()
 
-        # Well-known folder names supported directly by Graph API (language-independent).
-        # Using these bypasses display-name search, which avoids issues with localized
-        # folder names (e.g. German "Posteingang" vs English "Inbox").
-        well_known_folder_map = {
-            "inbox": "inbox",
-            "posteingang": "inbox",
-            "sent items": "sentitems",
-            "sent": "sentitems",
-            "gesendete elemente": "sentitems",
-            "deleted items": "deleteditems",
-            "deleted": "deleteditems",
-            "trash": "deleteditems",
-            "gelöschte elemente": "deleteditems",
-            "papierkorb": "deleteditems",
-            "drafts": "drafts",
-            "entwürfe": "drafts",
-            "junk email": "junkemail",
-            "junk": "junkemail",
-            "junk-e-mail": "junkemail",
-            "spam": "junkemail",
-            "outbox": "outbox",
-            "postausgang": "outbox",
-        }
-
-        # Determine base URL
         if mailbox_type == "personal":
             if mailbox_upn:
                 base_url = f"{GRAPH_ROOT}/users/{mailbox_upn}/mailFolders"
@@ -635,27 +670,32 @@ class GraphAPI:
         else:
             raise ValueError(f"Unknown mailbox_type: {mailbox_type}")
 
-        # For simple (non-nested) well-known folder names, resolve directly via the
-        # Graph well-known folder endpoint — no display-name listing needed.
-        path_parts = folder_name.split("/")
+        headers = self._get_headers()
+        path_parts = folder_reference.split("/")
         if len(path_parts) == 1:
-            wk = well_known_folder_map.get(folder_name.lower())
-            if wk:
+            well_known = _canonical_well_known_folder_name(folder_reference)
+            if well_known:
                 try:
-                    resp = requests.get(f"{base_url}/{wk}", headers=headers, timeout=30)
+                    resp = requests.get(
+                        f"{base_url}/{well_known}", headers=headers, timeout=30
+                    )
                     if resp.status_code == 200:
-                        return resp.json().get("id")
+                        folder = _json_dict(resp)
+                        return folder or None
                     # Fall through to display-name search if well-known lookup fails
                 except requests.exceptions.RequestException:
                     pass
 
-        current_folder_id = None
+        current_folder: dict[str, Any] | None = None
 
         for i, part in enumerate(path_parts):
-            if current_folder_id is None:
+            if current_folder is None:
                 url = base_url
             else:
-                url = f"{base_url}/{current_folder_id}/childFolders"
+                folder_id = current_folder.get("id")
+                if not isinstance(folder_id, str) or not folder_id:
+                    return None
+                url = f"{base_url}/{folder_id}/childFolders"
 
             try:
                 # Fetch all pages — Graph API defaults to 10 items per page
@@ -674,7 +714,7 @@ class GraphAPI:
                 for folder in folders:
                     display_name = folder.get("displayName", "")
                     if display_name.lower() == part.lower():
-                        current_folder_id = folder.get("id")
+                        current_folder = folder
                         found = True
                         break
 
@@ -684,15 +724,46 @@ class GraphAPI:
                         "Folder '%s' not found in path '%s' (looking for '%s')",
                         part,
                         path_so_far,
-                        folder_name,
+                        folder_reference,
                     )
                     return None
 
             except requests.exceptions.RequestException as exc:
-                logger.error("get_folder_id_by_name request exception: %s", exc)
+                logger.error("get_folder_by_reference request exception: %s", exc)
                 return None
 
-        return current_folder_id
+        return current_folder
+
+    def get_folder_id_by_name(
+        self,
+        folder_name: str,
+        *,
+        mailbox_type: str = "personal",
+        mailbox_upn: str | None = None,
+    ) -> str | None:
+        """
+        Get folder ID by folder name or path.
+
+        Supports:
+        - Simple names: "Inbox", "Sent Items", "logistics"
+        - Nested paths: "logistics/logistics_inbox", "Projects/Active/2024"
+        - Canonical well-known names and aliases: "sentitems", "trash"
+
+        Args:
+            folder_name: Folder name or path (use "/" for nested folders)
+            mailbox_type: "personal" or "shared"
+            mailbox_upn: User principal name for the mailbox
+
+        Returns:
+            Folder ID or None if not found
+        """
+        folder = self.get_folder_by_reference(
+            folder_name,
+            mailbox_type=mailbox_type,
+            mailbox_upn=mailbox_upn,
+        )
+        folder_id = folder.get("id") if folder else None
+        return folder_id if isinstance(folder_id, str) else None
 
     def update_message_body(
         self,
