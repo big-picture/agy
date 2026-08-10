@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `syncissues`, and the remaining official well-known names).
 - `GraphAPI.get_folder_by_reference(...)` returns the resolved Graph mailFolder
   object (`id`, localized `displayName`, and related metadata).
+- Public `GraphWellKnownFolder` string enum provides discoverable, typo-safe
+  constants while preserving compatibility with custom string folder paths.
 
 ### Changed
 

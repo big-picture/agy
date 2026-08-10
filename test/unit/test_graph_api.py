@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 import requests
 
+from agy.integrations.email import GraphWellKnownFolder
 from agy.integrations.email._graph_api import (
     GraphAPI,
     _json_dict,
@@ -107,6 +108,13 @@ _CANONICAL_WELL_KNOWN_FOLDER_NAMES = (
 )
 
 
+def test_graph_well_known_folder_enum_matches_official_names() -> None:
+    assert {folder.value for folder in GraphWellKnownFolder} == set(
+        _CANONICAL_WELL_KNOWN_FOLDER_NAMES
+    )
+    assert isinstance(GraphWellKnownFolder.DRAFTS, str)
+
+
 def _make_api() -> GraphAPI:
     return GraphAPI(tenant_id="t", client_id="c", client_secret="s", mailbox_upn="u")
 
@@ -138,6 +146,30 @@ def test_get_folder_by_reference_supports_every_canonical_well_known_name(
         "displayName": folder_name.title(),
     }
     assert captured["url"].endswith(f"/mailFolders/{folder_name}")
+
+
+def test_get_folder_by_reference_accepts_public_enum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _make_api()
+    monkeypatch.setattr(
+        api, "_get_headers", lambda force_refresh_token=False: {"x": "y"}
+    )
+    captured: dict[str, str] = {}
+
+    def fake_get(url: str, *args, **kwargs):
+        captured["url"] = url
+        return _resp(200, data={"id": "drafts-id", "displayName": "Entwürfe"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+
+    folder = api.get_folder_by_reference(
+        GraphWellKnownFolder.DRAFTS,
+        mailbox_upn="u",
+    )
+
+    assert folder == {"id": "drafts-id", "displayName": "Entwürfe"}
+    assert captured["url"].endswith("/mailFolders/drafts")
 
 
 @pytest.mark.parametrize(

@@ -338,7 +338,7 @@ GRAPH_EMAIL_DRAFT_ONLY=true
 #### Usage
 
 ```python
-from agy.integrations.email import GraphEmailAccount
+from agy.integrations.email import GraphEmailAccount, GraphWellKnownFolder
 
 # Using environment variables
 account = GraphEmailAccount()
@@ -354,14 +354,17 @@ locale-independent and resolve via Graph's well-known endpoint instead of
 localized display names:
 
 ```python
-# Canonical well-known names (recommended for system folders)
-emails = account.get_emails(folders=["inbox"])
-email.move("deleteditems")
-account.create_draft(email, "drafts")
-sent = account.get_emails(folders=["sentitems"])
+# Public StrEnum values provide autocomplete and typo protection in Python.
+emails = account.get_emails(folders=[GraphWellKnownFolder.INBOX])
+email.move(GraphWellKnownFolder.DELETED_ITEMS)
+account.create_draft(email, GraphWellKnownFolder.DRAFTS)
+sent = account.get_emails(folders=[GraphWellKnownFolder.SENT_ITEMS])
 ```
 
-Supported canonical well-known names:
+`GraphWellKnownFolder` values are strings, so existing string-based code and
+FLOWSY files remain compatible. Custom folder paths also continue to use strings.
+
+Supported canonical well-known string values:
 
 `archive`, `clutter`, `conflicts`, `conversationhistory`, `deleteditems`,
 `drafts`, `inbox`, `junkemail`, `localfailures`, `msgfolderroot`, `outbox`,

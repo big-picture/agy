@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from enum import StrEnum
 from typing import Any
 
 import requests
@@ -17,29 +18,32 @@ SCOPE = "https://graph.microsoft.com/.default"
 
 logger = logging.getLogger(__name__)
 
+
+class GraphWellKnownFolder(StrEnum):
+    """Locale-independent Microsoft Graph system folder names."""
+
+    ARCHIVE = "archive"
+    CLUTTER = "clutter"
+    CONFLICTS = "conflicts"
+    CONVERSATION_HISTORY = "conversationhistory"
+    DELETED_ITEMS = "deleteditems"
+    DRAFTS = "drafts"
+    INBOX = "inbox"
+    JUNK_EMAIL = "junkemail"
+    LOCAL_FAILURES = "localfailures"
+    MESSAGE_FOLDER_ROOT = "msgfolderroot"
+    OUTBOX = "outbox"
+    RECOVERABLE_ITEMS_DELETIONS = "recoverableitemsdeletions"
+    SCHEDULED = "scheduled"
+    SEARCH_FOLDERS = "searchfolders"
+    SENT_ITEMS = "sentitems"
+    SERVER_FAILURES = "serverfailures"
+    SYNC_ISSUES = "syncissues"
+
+
 # Official Microsoft Graph well-known folder names (locale-independent).
 # See: https://learn.microsoft.com/en-us/graph/api/resources/mailfolder
-_WELL_KNOWN_FOLDER_NAMES = frozenset(
-    {
-        "archive",
-        "clutter",
-        "conflicts",
-        "conversationhistory",
-        "deleteditems",
-        "drafts",
-        "inbox",
-        "junkemail",
-        "localfailures",
-        "msgfolderroot",
-        "outbox",
-        "recoverableitemsdeletions",
-        "scheduled",
-        "searchfolders",
-        "sentitems",
-        "serverfailures",
-        "syncissues",
-    }
-)
+_WELL_KNOWN_FOLDER_NAMES = frozenset(folder.value for folder in GraphWellKnownFolder)
 
 # Friendly / localized aliases that normalize to a well-known name.
 _WELL_KNOWN_FOLDER_ALIASES = {
