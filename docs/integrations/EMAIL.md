@@ -195,7 +195,7 @@ The `Email` class represents an email message with bound account methods.
 
 | Method                                                                                           | Returns | Description                                                                                                                                              |
 | ------------------------------------------------------------------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Email.create(to, subject, text, sender="", cc="", attachments=None, account=None, folder=None)` | `Email` | Create a new email (class method)                                                                                                                        |
+| `Email.create(to, subject, text, body_type=EmailBodyType.TEXT, sender="", cc="", attachments=None, account=None, folder=None)` | `Email` | Create a new email (class method)                                                                                                                        |
 | `send()`                                                                                         | `Email` | Send this email                                                                                                                                          |
 | `reply(text, *, subject=None, attachments=None)`                                                 | `Email` | Reply to the sender. `text`: body; `subject`: override reply subject (optional); `attachments`: list of `Attachment` objects (optional)                     |
 | `reply_all(text, *, subject=None, attachments=None)`                                             | `Email` | Reply to all recipients. Same parameters as `reply()`.                                                                                                    |
@@ -306,6 +306,34 @@ email = Email.create(
 ### GraphEmailAccount (Microsoft 365)
 
 For Microsoft 365 / Office 365 mailboxes using the Microsoft Graph API.
+
+#### HTML bodies
+
+Graph sending and draft creation accept explicit HTML through `EmailBodyType`:
+
+```python
+from agy.integrations.email import Email, EmailBodyType
+
+email = Email.create(
+    to="customer@example.com",
+    subject="Export reminder",
+    text='<p>Please <a href="mailto:export@example.com">contact export</a>.</p>',
+    body_type=EmailBodyType.HTML,
+    account=account,
+)
+email.send()
+# Alternatively: email.send(draft_only=True)
+# Or: account.create_draft(email, "drafts")
+```
+
+`Email.create(..., folder="drafts")` also applies the body type before saving.
+Without an explicit format, new messages remain plain text: markup is escaped
+and line breaks are preserved. Existing string values (`"html"`, `"text"`) remain
+compatible; Graph sending accepts HTML case-insensitively. HTML content is passed
+through unchanged, so escape any untrusted values when building templates.
+Recipient validation, configured draft-only mode, and send errors retain their
+existing behavior. This HTML support applies to Graph new messages and drafts;
+reply methods and other providers keep their existing body handling.
 
 #### Prerequisites
 

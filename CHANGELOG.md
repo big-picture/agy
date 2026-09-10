@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Public `EmailBodyType` enum and `Email.create(body_type=...)` argument.
+- Native HTML bodies for Microsoft Graph sending and draft creation, including
+  draft-only redirects. Plain text retains escaping and newline conversion.
+
 ## [1.1.1] - 2026-08-10
 
 ### Added

@@ -14,7 +14,7 @@ import requests
 
 from ._graph_api import GraphAPI
 from .account import EmailAccount
-from .email import Attachment, Email
+from .email import Attachment, Email, EmailBodyType
 from .env_config import env_for
 from .html_utils import plain_to_html
 
@@ -182,9 +182,7 @@ class GraphEmailAccount(EmailAccount):
                     continue
 
             base_url = self._message_url_base(folder_id)
-            select_fields = (
-                "id,subject,from,toRecipients,ccRecipients,replyTo,body,isRead,categories"
-            )
+            select_fields = "id,subject,from,toRecipients,ccRecipients,replyTo,body,isRead,categories"
             url = f"{base_url}?$select={select_fields}&$orderby=receivedDateTime desc&$top={max_results}"
 
             if only_unread:
@@ -345,7 +343,9 @@ class GraphEmailAccount(EmailAccount):
             "subject": email.subject,
             "body": {
                 "contentType": "HTML",
-                "content": plain_to_html(email.text),
+                "content": email.text
+                if email.body_type.lower() == EmailBodyType.HTML
+                else plain_to_html(email.text),
             },
             "toRecipients": to_recipients,
             "ccRecipients": cc_recipients,
@@ -820,7 +820,9 @@ class GraphEmailAccount(EmailAccount):
             "subject": email.subject,
             "body": {
                 "contentType": "HTML",
-                "content": plain_to_html(email.text),
+                "content": email.text
+                if email.body_type.lower() == EmailBodyType.HTML
+                else plain_to_html(email.text),
             },
             "toRecipients": to_recipients,
         }

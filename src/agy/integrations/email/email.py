@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .account import EmailAccount
+
+
+class EmailBodyType(StrEnum):
+    """Email body formats; HTML is supported for Graph sending and drafts."""
+
+    TEXT = "text"
+    HTML = "html"
 
 
 @dataclass
@@ -207,6 +215,7 @@ class Email:
         to: str,
         subject: str,
         text: str,
+        body_type: EmailBodyType | str = EmailBodyType.TEXT,
         sender: str = "",
         cc: str = "",
         attachments: list[str | Path] | None = None,
@@ -219,7 +228,8 @@ class Email:
         Args:
             to: Recipient address
             subject: Email subject
-            text: Email body text
+            text: Email body content
+            body_type: Body format (Graph sending/drafts support HTML). Defaults to text.
             sender: Sender address (optional, may be set by account)
             cc: CC addresses (optional)
             attachments: List of file paths to attach (optional)
@@ -239,6 +249,7 @@ class Email:
             recipient=to,
             subject=subject,
             text=text,
+            body_type=body_type,
             cc=cc,
             attachments=attachment_list,
             account=account,

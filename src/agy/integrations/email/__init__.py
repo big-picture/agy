@@ -1,6 +1,7 @@
 """Email integration module.
 
 Public API:
+    EmailBodyType - Plain-text and HTML body format constants
     Email - Email dataclass with bound account methods
     Attachment - Email attachment dataclass
     EmailAccount - Abstract base class for email accounts
@@ -14,7 +15,7 @@ Public API:
 from __future__ import annotations
 
 from .account import EmailAccount
-from .email import Attachment, Email
+from .email import Attachment, Email, EmailBodyType
 from .mock_account import MockEmailAccount
 
 # Provider-specific accounts are imported lazily to keep optional dependencies
@@ -40,6 +41,7 @@ def __getattr__(name: str):
 
 __all__ = [
     "Email",
+    "EmailBodyType",
     "Attachment",
     "EmailAccount",
     "GraphEmailAccount",
