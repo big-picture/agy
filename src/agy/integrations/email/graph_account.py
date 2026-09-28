@@ -462,14 +462,9 @@ class GraphEmailAccount(EmailAccount):
         Raises:
             EmailSafetyError: if any address is not allowed.
         """
-        from .email_safety import get_validator
+        from .email_safety import EmailSafetyValidator, get_validator
 
-        addresses = [
-            addr.strip()
-            for field in (email.recipient, email.cc)
-            for addr in (field or "").split(",")
-            if addr.strip()
-        ]
+        addresses = EmailSafetyValidator.split_addresses([email.recipient, email.cc])
         is_valid, error_msg = get_validator("graph").validate_recipients(
             addresses, operation="send"
         )

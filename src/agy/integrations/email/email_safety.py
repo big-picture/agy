@@ -38,11 +38,7 @@ class EmailSafetyValidator:
             allowed_addresses: List of specific allowed email addresses.
             provider: When set, load allowlists from {PROVIDER}_ALLOWED_EMAIL_* env.
         """
-        if (
-            allowed_domains is None
-            and allowed_addresses is None
-            and provider is not None
-        ):
+        if allowed_domains is None and allowed_addresses is None and provider is not None:
             config = get_safety_config(provider)
             allowed_domains = config["allowed_domains"]
             allowed_addresses = config["allowed_addresses"]
