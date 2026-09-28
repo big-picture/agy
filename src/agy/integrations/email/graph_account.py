@@ -16,12 +16,55 @@ from ._graph_api import GraphAPI
 from .account import EmailAccount
 from .email import Attachment, Email, EmailBodyType
 from .env_config import env_for
+from .errors import (
+    EmailPermanentError,
+    EmailSafetyError,
+    EmailSendError,
+    EmailTransientError,
+    parse_retry_after,
+)
 from .html_utils import plain_to_html
 
 if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+# Graph rejected the request without processing it; safe to retry later.
+_TRANSIENT_STATUS_CODES = frozenset({429, 503, 504})
+
+
+def _http_send_error(prefix: str, resp: requests.Response) -> EmailSendError:
+    """Classify a non-success Graph response for an outbound operation."""
+    message = f"{prefix}: HTTP {resp.status_code}"
+    if resp.status_code in _TRANSIENT_STATUS_CODES:
+        return EmailTransientError(
+            message,
+            status_code=resp.status_code,
+            retry_after=parse_retry_after(resp.headers),
+        )
+    return EmailPermanentError(message, status_code=resp.status_code)
+
+
+def _request_send_error(
+    prefix: str, exc: requests.exceptions.RequestException
+) -> EmailSendError:
+    """Classify a ``requests`` failure for an outbound operation.
+
+    Connection failures (including connect timeouts) happen before Graph
+    received the request and are transient. A ``ReadTimeout`` is ambiguous:
+    Graph may already have accepted the message, so retrying could send it
+    twice. It is therefore reported as permanent, like any other error.
+    """
+    message = f"{prefix}: {exc}"
+    if isinstance(exc, requests.exceptions.ReadTimeout):
+        return EmailPermanentError(message)
+    if isinstance(
+        exc,
+        (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout),
+    ):
+        return EmailTransientError(message)
+    return EmailPermanentError(message)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -364,30 +407,16 @@ class GraphEmailAccount(EmailAccount):
 
         is_valid, error_msg = get_validator("graph").validate_forward(email.recipient)
         if not is_valid:
-            raise RuntimeError(f"Safety check failed: {error_msg}")
+            raise EmailSafetyError(f"Safety check failed: {error_msg}")
 
-        headers = self._get_headers()
         url = f"{self.GRAPH_ROOT}/users/{self.user_email}/sendMail"
         message = self._build_message_payload(email)
-
         payload = {"message": message, "saveToSentItems": "true"}
 
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=30)
-            if resp.status_code == 202:
-                email.sender = self.user_email
-                email.account = self
-                return email
-            else:
-                logger.error(
-                    "Failed to send email: HTTP %s: %s",
-                    resp.status_code,
-                    resp.text[:500],
-                )
-                raise RuntimeError(f"Failed to send email: HTTP {resp.status_code}")
-        except requests.exceptions.RequestException as exc:
-            logger.error("Send email request failed: %s", exc)
-            raise RuntimeError(f"Failed to send email: {exc}")
+        self._post_outbound(url, "Failed to send email", 202, json=payload)
+        email.sender = self.user_email
+        email.account = self
+        return email
 
     def send_draft(self, email: Email | str, *, draft_only: bool = False) -> Email:
         """Send an existing draft via ``POST /users/{user}/messages/{id}/send``.
@@ -424,26 +453,34 @@ class GraphEmailAccount(EmailAccount):
 
         is_valid, error_msg = get_validator("graph").validate_forward(email.recipient)
         if not is_valid:
-            raise RuntimeError(f"Safety check failed: {error_msg}")
+            raise EmailSafetyError(f"Safety check failed: {error_msg}")
 
-        headers = self._get_headers()
         url = f"{self._message_url_base()}/{email.message_id}/send"
+        self._post_outbound(url, "Failed to send draft", 202)
+        email.sender = self.user_email
+        email.account = self
+        return email
 
+    def _post_outbound(
+        self, url: str, error_prefix: str, ok_status: int, **kwargs: Any
+    ) -> requests.Response:
+        """POST an outbound Graph request, raising typed errors on failure.
+
+        Raises:
+            EmailTransientError: 429/503/504 or a connection failure.
+            EmailPermanentError: any other failure (including ``ReadTimeout``).
+        """
         try:
-            resp = requests.post(url, headers=headers, timeout=30)
-            if resp.status_code == 202:
-                email.sender = self.user_email
-                email.account = self
-                return email
-            logger.error(
-                "Failed to send draft: HTTP %s: %s",
-                resp.status_code,
-                resp.text[:500],
-            )
-            raise RuntimeError(f"Failed to send draft: HTTP {resp.status_code}")
+            resp = requests.post(url, headers=self._get_headers(), timeout=30, **kwargs)
         except requests.exceptions.RequestException as exc:
-            logger.error("Send draft request failed: %s", exc)
-            raise RuntimeError(f"Failed to send draft: {exc}")
+            logger.error("%s: %s", error_prefix, exc)
+            raise _request_send_error(error_prefix, exc) from exc
+        if resp.status_code != ok_status:
+            logger.error(
+                "%s: HTTP %s: %s", error_prefix, resp.status_code, resp.text[:500]
+            )
+            raise _http_send_error(error_prefix, resp)
+        return resp
 
     def _load_draft_envelope(self, email: Email) -> None:
         """Populate subject and To/Cc of ``email`` from the stored Graph draft."""
@@ -884,8 +921,6 @@ class GraphEmailAccount(EmailAccount):
         attachments that ``send_email`` would send. Sets ``email.message_id`` to
         the new draft id and returns it.
         """
-        headers = self._get_headers()
-
         folder_id = self.api.get_folder_id_by_name(
             folder_name=folder,
             mailbox_type=self.mailbox_type,
@@ -898,18 +933,11 @@ class GraphEmailAccount(EmailAccount):
 
         url = f"{self.GRAPH_ROOT}/users/{self.user_email}/mailFolders/{folder_id}/messages"
 
-        try:
-            resp = requests.post(url, headers=headers, json=message, timeout=30)
-            if resp.status_code == 201:
-                data = _as_dict(resp.json())
-                email.message_id = _as_str(data.get("id")) or email.message_id
-                email.account = self
-                return email.message_id
-            else:
-                raise RuntimeError(f"Failed to create draft: HTTP {resp.status_code}")
-        except requests.exceptions.RequestException as exc:
-            logger.error("Create draft request failed: %s", exc)
-            raise RuntimeError(f"Failed to create draft: {exc}")
+        resp = self._post_outbound(url, "Failed to create draft", 201, json=message)
+        data = _as_dict(resp.json())
+        email.message_id = _as_str(data.get("id")) or email.message_id
+        email.account = self
+        return email.message_id
 
     # Helpers for enrichment
     @staticmethod

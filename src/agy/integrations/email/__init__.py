@@ -5,6 +5,10 @@ Public API:
     Attachment - Email attachment dataclass
     EmailBodyType - Body format of Email.text (text or html)
     EmailAccount - Abstract base class for email accounts
+    EmailSendError - Base outbound error (subclass of RuntimeError)
+    EmailTransientError - Retryable outbound error (status_code, retry_after)
+    EmailPermanentError - Non-retryable outbound error (status_code)
+    EmailSafetyError - Recipient rejected by the safety allowlist
     GraphEmailAccount - Microsoft Graph implementation
     GraphWellKnownFolder - Microsoft Graph system folder names
     GmailEmailAccount - Gmail implementation
@@ -16,6 +20,12 @@ from __future__ import annotations
 
 from .account import EmailAccount
 from .email import Attachment, Email, EmailBodyType
+from .errors import (
+    EmailPermanentError,
+    EmailSafetyError,
+    EmailSendError,
+    EmailTransientError,
+)
 from .mock_account import MockEmailAccount
 
 # Provider-specific accounts are imported lazily to keep optional dependencies
@@ -44,6 +54,10 @@ __all__ = [
     "Attachment",
     "EmailBodyType",
     "EmailAccount",
+    "EmailSendError",
+    "EmailTransientError",
+    "EmailPermanentError",
+    "EmailSafetyError",
     "GraphEmailAccount",
     "GraphWellKnownFolder",
     "GmailEmailAccount",
