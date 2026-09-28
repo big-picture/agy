@@ -427,3 +427,106 @@ def test_messages_base_shared_requires_upn() -> None:
     assert _messages_base("shared", None) is None
     with pytest.raises(ValueError):
         _messages_base("invalid", None)
+
+
+# ---------------------------------------------------------------------------
+# Token expiry
+# ---------------------------------------------------------------------------
+
+
+class _Clock:
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    c = _Clock()
+    monkeypatch.setattr("agy.integrations.email._graph_api.time.monotonic", c)
+    return c
+
+
+def _token_server(monkeypatch: pytest.MonkeyPatch, *payloads: dict) -> list[dict]:
+    calls: list[dict] = []
+    queue = list(payloads)
+
+    def _post(*args, **kwargs):
+        calls.append(kwargs)
+        return _resp(200, data=queue.pop(0))
+
+    monkeypatch.setattr(requests, "post", _post)
+    return calls
+
+
+def test_token_expiry_is_stored_from_expires_in(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    _token_server(monkeypatch, {"access_token": "t1", "expires_in": 3600})
+    api = GraphAPI(tenant_id="t", client_id="c", client_secret="s")
+
+    assert api._get_access_token() == "t1"
+    assert api._token_expires_at == 4600.0
+
+
+def test_cached_token_reused_while_more_than_300s_remain(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    calls = _token_server(
+        monkeypatch,
+        {"access_token": "t1", "expires_in": 3600},
+        {"access_token": "t2", "expires_in": 3600},
+    )
+    api = GraphAPI(tenant_id="t", client_id="c", client_secret="s")
+    api._get_access_token()
+
+    clock.now = 4600.0 - 301
+    assert api._get_access_token() == "t1"
+    assert len(calls) == 1
+
+
+def test_token_refreshed_when_less_than_300s_remain(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    calls = _token_server(
+        monkeypatch,
+        {"access_token": "t1", "expires_in": 3600},
+        {"access_token": "t2", "expires_in": "3599"},
+    )
+    api = GraphAPI(tenant_id="t", client_id="c", client_secret="s")
+    api._get_access_token()
+
+    clock.now = 4600.0 - 299
+    assert api._get_access_token() == "t2"
+    assert len(calls) == 2
+    assert api._token_expires_at == clock.now + 3599
+
+
+def test_force_refresh_fetches_new_token_even_if_valid(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    _token_server(
+        monkeypatch,
+        {"access_token": "t1", "expires_in": 3600},
+        {"access_token": "t2", "expires_in": 3600},
+    )
+    api = GraphAPI(tenant_id="t", client_id="c", client_secret="s")
+    api._get_access_token()
+
+    assert api._get_access_token(force_refresh=True) == "t2"
+    assert api._get_headers(force_refresh_token=False)["Authorization"] == "Bearer t2"
+
+
+def test_token_without_expires_in_is_cached_until_forced(
+    monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    calls = _token_server(monkeypatch, {"access_token": "t1"})
+    api = GraphAPI(tenant_id="t", client_id="c", client_secret="s")
+    api._get_access_token()
+
+    clock.now += 10 * 3600
+    assert api._get_access_token() == "t1"
+    assert api._token_expires_at is None
+    assert len(calls) == 1

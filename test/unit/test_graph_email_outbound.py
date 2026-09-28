@@ -39,6 +39,7 @@ class _Recorder:
 def _validator(ok: bool = True) -> Mock:
     validator = Mock()
     validator.validate_forward.return_value = (ok, "" if ok else "not allowed")
+    validator.validate_recipients.return_value = (ok, "" if ok else "not allowed")
     validator.validate_reply.return_value = (ok, "" if ok else "not allowed")
     return validator
 
@@ -65,6 +66,31 @@ def validator(monkeypatch: pytest.MonkeyPatch) -> Mock:
 def _no_draft_only_env(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("EMAIL_DRAFT_ONLY", "GRAPH_EMAIL_DRAFT_ONLY"):
         monkeypatch.delenv(name, raising=False)
+
+
+def _draft_envelope(
+    to: tuple[str, ...] = ("to@example.com",), cc: tuple[str, ...] = ()
+) -> Mock:
+    """GET /messages/{id} response for a stored draft's envelope."""
+    return Mock(
+        status_code=200,
+        json=Mock(
+            return_value={
+                "id": "d1",
+                "subject": "Stored subject",
+                "toRecipients": [{"emailAddress": {"address": a}} for a in to],
+                "ccRecipients": [{"emailAddress": {"address": a}} for a in cc],
+            }
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def draft_get(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
+    """send_draft always loads the stored draft's recipients first."""
+    recorder = _Recorder(*[_draft_envelope() for _ in range(5)])
+    monkeypatch.setattr("agy.integrations.email.graph_account.requests.get", recorder)
+    return recorder
 
 
 def _patch_post(monkeypatch: pytest.MonkeyPatch, *responses: Any) -> _Recorder:
@@ -203,8 +229,8 @@ def test_send_email_payload_is_unchanged_for_existing_callers(
         },
         "saveToSentItems": "true",
     }
-    validator.validate_forward.assert_called_once_with(
-        "to@example.com, to2@example.com"
+    validator.validate_recipients.assert_called_once_with(
+        ["to@example.com", "to2@example.com", "cc@example.com"], operation="send"
     )
 
 
@@ -299,6 +325,7 @@ def test_send_email_draft_only_creates_complete_draft(
     ]
     assert call["json"]["attachments"] == EXPECTED_ATTACHMENTS
     assert call["json"]["body"]["content"] == "<p>Hi</p>"
+    validator.validate_recipients.assert_not_called()
     validator.validate_forward.assert_not_called()
 
 
@@ -332,7 +359,9 @@ def test_send_draft_posts_to_send_endpoint(
     call = post.calls[0]
     assert call["url"] == f"{GRAPH}/users/user@example.com/messages/draft-1/send"
     assert call["headers"] == {"Authorization": "Bearer token"}
-    validator.validate_forward.assert_called_once_with("to@example.com")
+    validator.validate_recipients.assert_called_once_with(
+        ["to@example.com"], operation="send"
+    )
 
 
 def test_send_draft_accepts_draft_id_and_validates_server_recipients(
@@ -366,7 +395,9 @@ def test_send_draft_accepts_draft_id_and_validates_server_recipients(
     assert result.subject == "S"
     assert result.sender == "user@example.com"
     assert result.account is account
-    validator.validate_forward.assert_called_once_with("a@example.com, b@example.com")
+    validator.validate_recipients.assert_called_once_with(
+        ["a@example.com", "b@example.com", "c@example.com"], operation="send"
+    )
     assert (
         post.calls[0]["url"] == f"{GRAPH}/users/user@example.com/messages/draft-9/send"
     )
@@ -422,6 +453,7 @@ def test_send_draft_in_draft_only_mode_leaves_draft_unsent(
 
     assert result is email
     assert post.calls == []
+    validator.validate_recipients.assert_not_called()
     validator.validate_forward.assert_not_called()
 
 
