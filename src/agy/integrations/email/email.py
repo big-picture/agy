@@ -3,11 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .account import EmailAccount
+
+
+class EmailBodyType(StrEnum):
+    """Format of ``Email.text``.
+
+    When reading mail, providers set ``Email.body_type`` to the source format.
+    When sending or drafting (Graph), ``HTML`` sends ``Email.text`` unchanged as
+    HTML; any other value (including the default ``""``) treats ``Email.text``
+    as plain text, which is HTML-escaped with newlines converted to ``<br/>``.
+    """
+
+    TEXT = "text"
+    HTML = "html"
 
 
 @dataclass
@@ -200,6 +214,15 @@ class Email:
         """
         return self._require_account().send_email(self, draft_only=draft_only)
 
+    def send_draft(self, *, draft_only: bool = False) -> Email:
+        """
+        Send this email, which must be an existing draft (has ``message_id``).
+
+        Returns:
+            The sent email
+        """
+        return self._require_account().send_draft(self, draft_only=draft_only)
+
     @classmethod
     def create(
         cls,
@@ -212,6 +235,7 @@ class Email:
         attachments: list[str | Path] | None = None,
         account: EmailAccount | None = None,
         folder: str | None = None,
+        body_type: str = "",
     ) -> Email:
         """
         Create a new email, optionally saving as draft.
@@ -225,6 +249,7 @@ class Email:
             attachments: List of file paths to attach (optional)
             account: Email account to bind (optional)
             folder: If set with account, save as draft in this folder
+            body_type: ``EmailBodyType.HTML`` if ``text`` is HTML (optional)
 
         Returns:
             The created Email instance
@@ -240,6 +265,7 @@ class Email:
             subject=subject,
             text=text,
             cc=cc,
+            body_type=body_type,
             attachments=attachment_list,
             account=account,
         )

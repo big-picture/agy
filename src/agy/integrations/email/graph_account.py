@@ -14,7 +14,7 @@ import requests
 
 from ._graph_api import GraphAPI
 from .account import EmailAccount
-from .email import Attachment, Email
+from .email import Attachment, Email, EmailBodyType
 from .env_config import env_for
 from .html_utils import plain_to_html
 
@@ -103,6 +103,48 @@ class GraphEmailAccount(EmailAccount):
         if folder_id:
             return f"{self.GRAPH_ROOT}/users/{self.user_email}/mailFolders/{folder_id}/messages"
         return f"{self.GRAPH_ROOT}/users/{self.user_email}/messages"
+
+    @staticmethod
+    def _recipients_payload(addresses: str) -> list[dict[str, Any]]:
+        """Convert a comma-separated address string to Graph recipients."""
+        return [
+            {"emailAddress": {"address": addr.strip()}}
+            for addr in (addresses or "").split(",")
+            if addr.strip()
+        ]
+
+    @staticmethod
+    def _body_payload(email: Email) -> dict[str, str]:
+        """Graph body for an outgoing email.
+
+        ``EmailBodyType.HTML`` passes ``email.text`` through unchanged; anything
+        else is treated as plain text (escaped, newlines converted to ``<br/>``).
+        """
+        if (email.body_type or "").lower() == EmailBodyType.HTML:
+            content = email.text
+        else:
+            content = plain_to_html(email.text)
+        return {"contentType": "HTML", "content": content}
+
+    def _build_message_payload(self, email: Email) -> dict[str, Any]:
+        """Build the Graph message resource shared by sendMail and drafts."""
+        message: dict[str, Any] = {
+            "subject": email.subject,
+            "body": self._body_payload(email),
+            "toRecipients": self._recipients_payload(email.recipient),
+            "ccRecipients": self._recipients_payload(email.cc),
+        }
+        if email.attachments:
+            message["attachments"] = [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": att.filename,
+                    "contentBytes": base64.b64encode(att.content).decode("utf-8"),
+                    "contentType": att.content_type,
+                }
+                for att in email.attachments
+            ]
+        return message
 
     def _graph_message_to_email(self, msg: dict) -> Email:
         """Convert Graph API message dict to Email object."""
@@ -326,44 +368,7 @@ class GraphEmailAccount(EmailAccount):
 
         headers = self._get_headers()
         url = f"{self.GRAPH_ROOT}/users/{self.user_email}/sendMail"
-
-        to_recipients = [
-            {"emailAddress": {"address": addr.strip()}}
-            for addr in email.recipient.split(",")
-            if addr.strip()
-        ]
-
-        cc_recipients = []
-        if email.cc:
-            cc_recipients = [
-                {"emailAddress": {"address": addr.strip()}}
-                for addr in email.cc.split(",")
-                if addr.strip()
-            ]
-
-        message: dict[str, Any] = {
-            "subject": email.subject,
-            "body": {
-                "contentType": "HTML",
-                "content": plain_to_html(email.text),
-            },
-            "toRecipients": to_recipients,
-            "ccRecipients": cc_recipients,
-        }
-
-        # Add attachments
-        if email.attachments:
-            attachments_payload: list[dict[str, str]] = []
-            for att in email.attachments:
-                attachments_payload.append(
-                    {
-                        "@odata.type": "#microsoft.graph.fileAttachment",
-                        "name": att.filename,
-                        "contentBytes": base64.b64encode(att.content).decode("utf-8"),
-                        "contentType": att.content_type,
-                    }
-                )
-            message["attachments"] = attachments_payload
+        message = self._build_message_payload(email)
 
         payload = {"message": message, "saveToSentItems": "true"}
 
@@ -383,6 +388,80 @@ class GraphEmailAccount(EmailAccount):
         except requests.exceptions.RequestException as exc:
             logger.error("Send email request failed: %s", exc)
             raise RuntimeError(f"Failed to send email: {exc}")
+
+    def send_draft(self, email: Email | str, *, draft_only: bool = False) -> Email:
+        """Send an existing draft via ``POST /users/{user}/messages/{id}/send``.
+
+        Args:
+            email: Draft email (with ``message_id``, e.g. from ``create_draft``)
+                or the draft's message id. When only an id is given, or the email
+                has no recipient, the draft's recipients are loaded from Graph so
+                the safety check validates what will actually be sent.
+            draft_only: If True (or draft-only env), the draft is left unsent.
+
+        Returns:
+            The sent email with ``sender`` and ``account`` populated.
+        """
+        if isinstance(email, str):
+            email = Email(message_id=email)
+        if not email.message_id:
+            raise ValueError("send_draft requires email.message_id (the draft id)")
+
+        if self._should_draft_only(draft_only):
+            self._log_outgoing_draft_redirect(
+                "send_draft",
+                draft_only_param=draft_only,
+                recipient=email.recipient,
+                subject=email.subject,
+            )
+            email.account = self
+            return email
+
+        if not email.recipient:
+            self._load_draft_envelope(email)
+
+        from .email_safety import get_validator
+
+        is_valid, error_msg = get_validator("graph").validate_forward(email.recipient)
+        if not is_valid:
+            raise RuntimeError(f"Safety check failed: {error_msg}")
+
+        headers = self._get_headers()
+        url = f"{self._message_url_base()}/{email.message_id}/send"
+
+        try:
+            resp = requests.post(url, headers=headers, timeout=30)
+            if resp.status_code == 202:
+                email.sender = self.user_email
+                email.account = self
+                return email
+            logger.error(
+                "Failed to send draft: HTTP %s: %s",
+                resp.status_code,
+                resp.text[:500],
+            )
+            raise RuntimeError(f"Failed to send draft: HTTP {resp.status_code}")
+        except requests.exceptions.RequestException as exc:
+            logger.error("Send draft request failed: %s", exc)
+            raise RuntimeError(f"Failed to send draft: {exc}")
+
+    def _load_draft_envelope(self, email: Email) -> None:
+        """Populate subject and To/Cc of ``email`` from the stored Graph draft."""
+        url = f"{self._message_url_base()}/{email.message_id}"
+        params = {"$select": "id,subject,toRecipients,ccRecipients"}
+        try:
+            resp = requests.get(
+                url, headers=self._get_headers(), params=params, timeout=30
+            )
+        except requests.exceptions.RequestException as exc:
+            logger.error("Load draft request failed: %s", exc)
+            raise RuntimeError(f"Failed to load draft: {exc}")
+        if resp.status_code != 200:
+            raise RuntimeError(f"Failed to load draft: HTTP {resp.status_code}")
+        loaded = self._graph_message_to_email(_as_dict(resp.json()))
+        email.recipient = loaded.recipient
+        email.cc = loaded.cc
+        email.subject = email.subject or loaded.subject
 
     def fetch_attachments(self, email: Email) -> None:
         """
@@ -798,8 +877,13 @@ class GraphEmailAccount(EmailAccount):
             "enrich_email_hidden is not supported for GraphEmailAccount"
         )
 
-    def create_draft(self, email: Email, folder: str) -> None:
-        """Save an email as draft in a folder."""
+    def create_draft(self, email: Email, folder: str) -> str | None:
+        """Save an email as draft in a folder.
+
+        The draft carries the same subject, body, To/Cc recipients and file
+        attachments that ``send_email`` would send. Sets ``email.message_id`` to
+        the new draft id and returns it.
+        """
         headers = self._get_headers()
 
         folder_id = self.api.get_folder_id_by_name(
@@ -810,20 +894,7 @@ class GraphEmailAccount(EmailAccount):
         if not folder_id:
             raise RuntimeError(f"Folder '{folder}' not found")
 
-        to_recipients = [
-            {"emailAddress": {"address": addr.strip()}}
-            for addr in email.recipient.split(",")
-            if addr.strip()
-        ]
-
-        message = {
-            "subject": email.subject,
-            "body": {
-                "contentType": "HTML",
-                "content": plain_to_html(email.text),
-            },
-            "toRecipients": to_recipients,
-        }
+        message = self._build_message_payload(email)
 
         url = f"{self.GRAPH_ROOT}/users/{self.user_email}/mailFolders/{folder_id}/messages"
 
@@ -833,6 +904,7 @@ class GraphEmailAccount(EmailAccount):
                 data = _as_dict(resp.json())
                 email.message_id = _as_str(data.get("id")) or email.message_id
                 email.account = self
+                return email.message_id
             else:
                 raise RuntimeError(f"Failed to create draft: HTTP {resp.status_code}")
         except requests.exceptions.RequestException as exc:
