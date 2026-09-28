@@ -21,9 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Typed outbound email errors in `agy.integrations.email` (module `errors`):
   `EmailSendError(RuntimeError)`, `EmailTransientError` (`status_code`,
   `retry_after`), `EmailPermanentError` (`status_code`) and `EmailSafetyError`.
-  Graph `send_email`, `send_draft` and `create_draft` raise them: 429/503/504
-  and connection failures are transient, `ReadTimeout` (the request may have
-  been accepted) and other failures are permanent. Messages keep their
+  Graph `send_email`, `send_draft` (including loading the stored draft) and
+  `create_draft` raise them. Transient: HTTP 429/502/503/504, connect
+  timeouts, and connection errors where the connection was never established
+  (refused, DNS failure). Permanent: `ReadTimeout`, connection errors after
+  connecting ("Connection aborted", remote disconnect), since the request
+  may have been accepted, and all other failures. Messages keep their
   prefixes, and `except RuntimeError` still catches them.
 - `EmailSafetyValidator.validate_recipients(addresses, operation="send")`
   validates each address individually (plus `extract_address` /
@@ -49,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Graph `send_email` / `send_draft` validated the comma-joined To string as a
   single address (only its last domain counted) and never checked Cc. Every
   To and Cc address is now validated individually.
+- Graph `send_draft` always loads the stored draft's To/Cc and validates
+  them. Previously, when the caller passed a recipient, the stored draft was
+  not loaded, so its Cc (or a different To) went unchecked.
 
 ## [1.1.1] - 2026-08-10
 

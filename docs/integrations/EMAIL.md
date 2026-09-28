@@ -434,15 +434,17 @@ account.send_draft(email)      # or account.send_draft(draft_id)
 ```
 
 `send_draft` applies the same `GRAPH_ALLOWED_EMAIL_*` safety check as
-`send_email`. When called with only a draft id (or an email without
-recipient), the draft's recipients are loaded from Graph first so the check
-validates what will actually be sent. In draft-only mode
+`send_email`. It always loads the stored draft's To/Cc from Graph first and
+validates those, even if the email you pass has recipients, so the check
+covers what will actually be sent. The loaded To/Cc replace the email's
+`recipient`/`cc`; your `subject` is kept unless it is empty. In draft-only mode
 (`draft_only=True`, `GRAPH_EMAIL_DRAFT_ONLY` or `EMAIL_DRAFT_ONLY`) the draft
 is left unsent.
 
 #### Send Errors and Retries
 
-Graph `send_email`, `send_draft` and `create_draft` raise typed errors from
+Graph `send_email`, `send_draft` (including loading the stored draft) and
+`create_draft` raise typed errors from
 `agy.integrations.email`. All subclass `RuntimeError` and keep the existing
 message prefixes (`"Failed to send email: ..."`, `"Failed to send draft:
 ..."`, `"Failed to create draft: ..."`, `"Safety check failed: ..."`), so
@@ -450,12 +452,14 @@ existing `except RuntimeError` handlers keep working.
 
 | Error | When | Retry? |
 | ----- | ---- | ------ |
-| `EmailTransientError` (`status_code`, `retry_after`) | HTTP 429/503/504, connection error, connect timeout | Yes, after `retry_after` seconds (from `Retry-After`) if set |
-| `EmailPermanentError` (`status_code`) | Any other HTTP error, `ReadTimeout`, other request errors | No |
+| `EmailTransientError` (`status_code`, `retry_after`) | HTTP 429/502/503/504; connect timeout; connection could not be established (refused, DNS failure) | Yes, after `retry_after` seconds (from `Retry-After`) if set |
+| `EmailPermanentError` (`status_code`) | Any other HTTP error; `ReadTimeout`; connection lost after connecting ("Connection aborted", remote disconnect, reset); other request errors | No |
 | `EmailSafetyError` (subclass of `EmailPermanentError`) | A To/Cc address is not allowlisted | No |
 
-A `ReadTimeout` is deliberately permanent: Graph may already have accepted
-the message, so retrying could send it twice.
+A `ReadTimeout` or a connection dropped after connecting is deliberately
+permanent: Graph may already have accepted the message, so retrying could
+send it twice. The error message says so ("request may have been accepted by
+Graph ...").
 
 ```python
 from agy.integrations.email import EmailTransientError
