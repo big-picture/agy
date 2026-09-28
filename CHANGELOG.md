@@ -26,8 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   timeouts, and connection errors where the connection was never established
   (refused, DNS failure). Permanent: `ReadTimeout`, connection errors after
   connecting ("Connection aborted", remote disconnect), since the request
-  may have been accepted, and all other failures. Messages keep their
-  prefixes, and `except RuntimeError` still catches them.
+  may have been accepted, and all other failures. Loading the stored draft
+  in `send_draft` is an idempotent read, so there any timeout or connection
+  error (except TLS errors) is transient. Messages keep their prefixes, and
+  `except RuntimeError` still catches them.
 - `EmailSafetyValidator.validate_recipients(addresses, operation="send")`
   validates each address individually (plus `extract_address` /
   `split_addresses` helpers).
@@ -36,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `urllib3>=1.26` is now a declared runtime dependency (previously only
+  pulled in via `requests`).
 - The cached Graph access token now honours `expires_in` and is refreshed
   when fewer than 300 s remain. Graph send/draft requests refresh the token
   and retry once on HTTP 401.
