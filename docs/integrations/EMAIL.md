@@ -459,7 +459,9 @@ existing `except RuntimeError` handlers keep working.
 A `ReadTimeout` or a connection dropped after connecting is deliberately
 permanent: Graph may already have accepted the message, so retrying could
 send it twice. The error message says so ("request may have been accepted by
-Graph ...").
+Graph ..."). This only applies to requests that send or create something.
+Loading the stored draft in `send_draft` is a read, so a read timeout or a
+dropped connection there is an `EmailTransientError`.
 
 ```python
 from agy.integrations.email import EmailTransientError
