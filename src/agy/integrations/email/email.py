@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 class EmailBodyType(StrEnum):
     """Format of ``Email.text``.
 
-    When reading mail, providers set ``Email.body_type`` to the source format.
+    Graph marks incoming HTML converted to plain text as ``TEXT``.
     When sending or drafting (Graph), ``HTML`` sends ``Email.text`` unchanged as
     HTML; any other value (including the default ``""``) treats ``Email.text``
     as plain text, which is HTML-escaped with newlines converted to ``<br/>``.

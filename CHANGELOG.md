@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stored draft Bcc recipients are included in the Graph allowlist check,
+  including drafts with only Bcc recipients.
+- Incoming Graph HTML converted to plain text is marked as text, preserving
+  escaping and line breaks when sent or saved as a new draft.
+- Token acquisition and refresh request failures use the outbound typed errors;
+  timeouts before sending a message remain safe to retry.
 - `GraphEmailAccount.create_draft` now includes Cc recipients and file
   attachments, so drafts (including `send_email` redirected by draft-only mode)
   match what `send_email` would send. Send and draft share one payload builder.

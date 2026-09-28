@@ -294,6 +294,7 @@ class GraphEmailAccount(EmailAccount):
             body_type = msg["body"].get("contentType", "")
             if body_type == "html":
                 body_text = re.sub(r"<[^>]+>", "", body_content)
+                body_type = EmailBodyType.TEXT
             else:
                 body_text = body_content
 
@@ -493,7 +494,7 @@ class GraphEmailAccount(EmailAccount):
 
         Args:
             email: Draft email (with ``message_id``, e.g. from ``create_draft``)
-                or the draft's message id. The stored draft's To/Cc are always
+                or the draft's message id. The stored draft's To/Cc/Bcc are always
                 loaded from Graph (overwriting ``recipient``/``cc``) so the safety
                 check validates what will actually be sent. The caller's
                 ``subject`` is kept unless it is empty.
@@ -517,8 +518,8 @@ class GraphEmailAccount(EmailAccount):
             email.account = self
             return email
 
-        self._load_draft_envelope(email)
-        self._check_recipients_allowed(email)
+        bcc = self._load_draft_envelope(email)
+        self._check_recipients_allowed(email, bcc=bcc)
 
         url = f"{self._message_url_base()}/{email.message_id}/send"
         self._outbound_request("post", url, "Failed to send draft", 202)
@@ -527,15 +528,17 @@ class GraphEmailAccount(EmailAccount):
         return email
 
     @staticmethod
-    def _check_recipients_allowed(email: Email) -> None:
-        """Validate each To and Cc address against the Graph allowlist.
+    def _check_recipients_allowed(email: Email, *, bcc: str = "") -> None:
+        """Validate To/Cc and any stored Bcc against the Graph allowlist.
 
         Raises:
             EmailSafetyError: if any address is not allowed.
         """
         from .email_safety import EmailSafetyValidator, get_validator
 
-        addresses = EmailSafetyValidator.split_addresses([email.recipient, email.cc])
+        addresses = EmailSafetyValidator.split_addresses(
+            [email.recipient, email.cc, bcc]
+        )
         is_valid, error_msg = get_validator("graph").validate_recipients(
             addresses, operation="send"
         )
@@ -593,7 +596,14 @@ class GraphEmailAccount(EmailAccount):
         idempotent: bool,
         **kwargs: Any,
     ) -> requests.Response:
-        headers = self._get_headers(force_refresh_token=force_refresh_token)
+        try:
+            headers = self._get_headers(force_refresh_token=force_refresh_token)
+        except requests.exceptions.RequestException as exc:
+            # No message request has been made yet, so token timeouts and
+            # disconnects are safe to retry, even for a non-idempotent send.
+            if exc.response is not None:
+                raise _http_send_error(error_prefix, exc.response) from exc
+            raise _request_send_error(error_prefix, exc, idempotent=True) from exc
         send = getattr(requests, method)
         try:
             return send(url, headers=headers, timeout=30, **kwargs)
@@ -601,20 +611,25 @@ class GraphEmailAccount(EmailAccount):
             logger.error("%s: %s", error_prefix, exc)
             raise _request_send_error(error_prefix, exc, idempotent=idempotent) from exc
 
-    def _load_draft_envelope(self, email: Email) -> None:
-        """Set To/Cc (and an empty subject) of ``email`` from the stored draft.
+    def _load_draft_envelope(self, email: Email) -> str:
+        """Set To/Cc and an empty subject; return stored Bcc for validation.
 
         Raises the same typed errors as the send paths.
         """
         url = f"{self._message_url_base()}/{email.message_id}"
-        params = {"$select": "id,subject,toRecipients,ccRecipients"}
+        params = {"$select": "id,subject,toRecipients,ccRecipients,bccRecipients"}
         resp = self._outbound_request(
             "get", url, "Failed to load draft", 200, idempotent=True, params=params
         )
-        loaded = self._graph_message_to_email(_as_dict(resp.json()))
+        data = _as_dict(resp.json())
+        loaded = self._graph_message_to_email(data)
         email.recipient = loaded.recipient
         email.cc = loaded.cc
         email.subject = email.subject or loaded.subject
+        return ", ".join(
+            recipient.get("emailAddress", {}).get("address", "")
+            for recipient in data.get("bccRecipients", [])
+        )
 
     def fetch_attachments(self, email: Email) -> None:
         """

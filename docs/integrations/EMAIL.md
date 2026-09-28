@@ -434,7 +434,7 @@ account.send_draft(email)      # or account.send_draft(draft_id)
 ```
 
 `send_draft` applies the same `GRAPH_ALLOWED_EMAIL_*` safety check as
-`send_email`. It always loads the stored draft's To/Cc from Graph first and
+`send_email`. It always loads the stored draft's To/Cc/Bcc from Graph first and
 validates those, even if the email you pass has recipients, so the check
 covers what will actually be sent. The loaded To/Cc replace the email's
 `recipient`/`cc`; your `subject` is kept unless it is empty. In draft-only mode
@@ -454,7 +454,7 @@ existing `except RuntimeError` handlers keep working.
 | ----- | ---- | ------ |
 | `EmailTransientError` (`status_code`, `retry_after`) | HTTP 429/502/503/504; connect timeout; connection could not be established (refused, DNS failure) | Yes, after `retry_after` seconds (from `Retry-After`) if set |
 | `EmailPermanentError` (`status_code`) | Any other HTTP error; `ReadTimeout`; connection lost after connecting ("Connection aborted", remote disconnect, reset); other request errors | No |
-| `EmailSafetyError` (subclass of `EmailPermanentError`) | A To/Cc address is not allowlisted | No |
+| `EmailSafetyError` (subclass of `EmailPermanentError`) | A To/Cc address or a stored draft's Bcc address is not allowlisted | No |
 
 A `ReadTimeout` or a connection dropped after connecting is deliberately
 permanent: Graph may already have accepted the message, so retrying could
@@ -475,6 +475,12 @@ except EmailTransientError as exc:
 Access tokens are refreshed when fewer than 5 minutes of their lifetime
 (`expires_in`) remain. If Graph still answers a send/draft request with
 HTTP 401, the token is refreshed and the request retried once.
+Token request failures also use these typed errors. Timeouts and connection
+loss during token acquisition are transient because no message has been sent;
+TLS errors remain permanent. HTTP failures retain their status and retry delay.
+
+Graph's read path converts incoming HTML to plain text and marks the result
+as `EmailBodyType.TEXT`, so subsequent sends and drafts escape it correctly.
 
 ---
 
