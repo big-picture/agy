@@ -59,6 +59,7 @@ dependencies = [
     "google-api-python-client>=2.100.0",
     "requests>=2.31.0",
     "atlassian-python-api>=4.0.0",
+    "urllib3>=1.26",
 ]
 
 [project.optional-dependencies]

@@ -18,6 +18,9 @@ SCOPE = "https://graph.microsoft.com/.default"
 
 logger = logging.getLogger(__name__)
 
+# Refresh the cached access token when fewer than this many seconds remain.
+TOKEN_REFRESH_MARGIN_SECONDS = 300.0
+
 
 class GraphWellKnownFolder(StrEnum):
     """Locale-independent Microsoft Graph system folder names."""
@@ -115,6 +118,8 @@ class GraphAPI:
     ):
         """Initialize GraphAPI with credentials (env defaults allowed)."""
         self._cached_token: str | None = None
+        # time.monotonic() deadline of the cached token; None = unknown expiry.
+        self._token_expires_at: float | None = None
         creds = get_graph_credentials()
         self._tenant_id = tenant_id or creds["tenant_id"]
         self._client_id = client_id or creds["client_id"]
@@ -129,14 +134,38 @@ class GraphAPI:
 
     # ------------------------------------------------------------------ Auth
     def _get_access_token(self, force_refresh: bool = False) -> str:
-        """Get Graph API access token, using cached token if available."""
-        if self._cached_token and not force_refresh:
+        """Get Graph API access token, using the cached token while it is fresh.
+
+        The cached token is refreshed when ``force_refresh`` is set or fewer than
+        ``TOKEN_REFRESH_MARGIN_SECONDS`` remain before its ``expires_in``
+        deadline. Tokens without ``expires_in`` are cached until forced.
+        """
+        if self._cached_token and not force_refresh and not self._token_expiring():
             logger.info("Using cached Graph access token")
             return self._cached_token
 
         logger.info("Fetching new Graph access token")
+        self._token_expires_at = None
         self._cached_token = self._get_graph_access_token_with_retry()
         return self._cached_token
+
+    def _token_expiring(self) -> bool:
+        """True if the cached token expires within the refresh margin."""
+        if self._token_expires_at is None:
+            return False
+        remaining = self._token_expires_at - time.monotonic()
+        return remaining < TOKEN_REFRESH_MARGIN_SECONDS
+
+    def _remember_token_expiry(self, response: requests.Response) -> None:
+        """Store the token deadline from the response's ``expires_in``."""
+        raw = _json_dict(response).get("expires_in")
+        try:
+            expires_in = float(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            expires_in = None
+        self._token_expires_at = (
+            time.monotonic() + expires_in if expires_in is not None else None
+        )
 
     def _get_graph_access_token_with_retry(self, max_retries: int = 3) -> str:
         """Fetch Microsoft Graph access token with retry logic."""
@@ -162,6 +191,7 @@ class GraphAPI:
                 if response.status_code == 200:
                     access_token = _json_str(response, "access_token")
                     if access_token:
+                        self._remember_token_expiry(response)
                         return access_token
                     raise ValueError("Access token not found in response")
 
