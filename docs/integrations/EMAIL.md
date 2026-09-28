@@ -187,6 +187,7 @@ The `Email` class represents an email message with bound account methods.
 | `text`        | `str`                  | Email body text             |
 | `cc`          | `str`                  | CC recipients               |
 | `reply_to`    | `str`                  | Reply-to address            |
+| `body_type`   | `str`                  | Format of `text`: `EmailBodyType.TEXT` / `EmailBodyType.HTML` (see below) |
 | `message_id`  | `str \| None`          | Unique message identifier   |
 | `attachments` | `list[Attachment]`     | List of attachments         |
 | `account`     | `EmailAccount \| None` | Bound email account         |
@@ -195,8 +196,9 @@ The `Email` class represents an email message with bound account methods.
 
 | Method                                                                                           | Returns | Description                                                                                                                                              |
 | ------------------------------------------------------------------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Email.create(to, subject, text, sender="", cc="", attachments=None, account=None, folder=None)` | `Email` | Create a new email (class method)                                                                                                                        |
+| `Email.create(to, subject, text, sender="", cc="", attachments=None, account=None, folder=None, body_type="")` | `Email` | Create a new email (class method)                                                                                                                        |
 | `send()`                                                                                         | `Email` | Send this email                                                                                                                                          |
+| `send_draft()`                                                                                   | `Email` | Send this email, which must be an existing draft (`message_id` set). Graph only; other providers raise `NotImplementedError` |
 | `reply(text, *, subject=None, attachments=None)`                                                 | `Email` | Reply to the sender. `text`: body; `subject`: override reply subject (optional); `attachments`: list of `Attachment` objects (optional)                     |
 | `reply_all(text, *, subject=None, attachments=None)`                                             | `Email` | Reply to all recipients. Same parameters as `reply()`.                                                                                                    |
 | `forward(to)`                                                                                    | `Email` | Forward this email. `to`: recipient email address (str)                                                                                                  |
@@ -249,6 +251,8 @@ implement these methods.
 | `get_emails(folders=None, max_results=100, only_unread=False)`                                                                                                                             | `list[Email]` | Fetch emails from account |
 | `find_emails(folders=None, max_results=100, to_contains=None, from_contains=None, cc_contains=None, subject_contains=None, body_contains=None, has_attachments=None, email_contains=None)` | `list[Email]` | Search for emails         |
 | `send_email(email)`                                                                                                                                                                        | `Email`       | Send an email             |
+| `create_draft(email, folder)`                                                                                                                                                              | `str \| None` | Save an email as draft; Graph returns the draft id (also set on `email.message_id`) |
+| `send_draft(email_or_id, *, draft_only=False)`                                                                                                                                             | `Email`       | Send an existing draft. Optional operation, default raises `NotImplementedError` (implemented by Graph) |
 | `mark_unread_email(email)`                                                                                                                                                                 | `None`        | Mark an existing email as unread |
 
 *Example:*
@@ -400,6 +404,41 @@ Notes:
   nested custom path.
 - A slash inside a single custom folder `displayName` is not supported by path
   traversal; rename such folders before using them in a display-name path.
+
+#### HTML Bodies, Drafts, and Sending Drafts
+
+By default `Email.text` is plain text: Graph `send_email` / `create_draft`
+HTML-escape it and convert newlines to `<br/>`. Set
+`body_type=EmailBodyType.HTML` to send `text` unchanged as HTML (reply,
+forward and enrich are unaffected):
+
+```python
+from agy.integrations.email import Attachment, Email, EmailBodyType
+
+email = Email(
+    recipient="customer@company.com",
+    cc="team@company.com",
+    subject="Report",
+    text="<p>Hello <b>team</b></p>",
+    body_type=EmailBodyType.HTML,
+    attachments=[Attachment.from_path("report.pdf")],
+    account=account,
+)
+
+# Drafts contain the same To/Cc, body and file attachments that send_email
+# would send (also when send_email is redirected by GRAPH_EMAIL_DRAFT_ONLY).
+draft_id = account.create_draft(email, GraphWellKnownFolder.DRAFTS)
+
+# Later: send the prepared draft (POST /messages/{id}/send).
+account.send_draft(email)      # or account.send_draft(draft_id)
+```
+
+`send_draft` applies the same `GRAPH_ALLOWED_EMAIL_*` safety check as
+`send_email`. When called with only a draft id (or an email without
+recipient), the draft's recipients are loaded from Graph first so the check
+validates what will actually be sent. In draft-only mode
+(`draft_only=True`, `GRAPH_EMAIL_DRAFT_ONLY` or `EMAIL_DRAFT_ONLY`) the draft
+is left unsent.
 
 ---
 
