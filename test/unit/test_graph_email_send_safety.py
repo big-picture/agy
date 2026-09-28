@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import socket
+from http.client import RemoteDisconnected
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
 import requests
+from urllib3.connection import HTTPSConnection
+from urllib3.exceptions import (
+    ConnectTimeoutError,
+    MaxRetryError,
+    NameResolutionError,
+    NewConnectionError,
+    ProtocolError,
+)
 
 from agy.integrations.email import (
     Email,
@@ -131,7 +141,7 @@ def test_errors_module_exports() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("status", [429, 503, 504])
+@pytest.mark.parametrize("status", [429, 502, 503, 504])
 @pytest.mark.parametrize(("operation", "ok_status", "prefix"), OPERATIONS)
 def test_retryable_status_raises_transient(
     monkeypatch: pytest.MonkeyPatch,
@@ -151,6 +161,7 @@ def test_retryable_status_raises_transient(
     assert info.value.retry_after is None
 
 
+@pytest.mark.parametrize("status", [429, 502, 503])
 @pytest.mark.parametrize(
     ("header", "expected"),
     [("7", 7.0), ("1.5", 1.5), ("0", 0.0), ("Wed, 21 Oct 2026 07:28:00 GMT", None)],
@@ -161,8 +172,9 @@ def test_transient_error_parses_retry_after_seconds(
     validator: Mock,
     header: str,
     expected: float | None,
+    status: int,
 ) -> None:
-    _patch_post(monkeypatch, _resp(429, headers={"Retry-After": header}))
+    _patch_post(monkeypatch, _resp(status, headers={"Retry-After": header}))
 
     with pytest.raises(EmailTransientError) as info:
         _send_email(account)
@@ -195,24 +207,85 @@ def test_other_status_raises_permanent(
 # ---------------------------------------------------------------------------
 
 
+# Exceptions built the way requests.adapters.HTTPAdapter.send wraps urllib3's.
+_URL = "/v1.0/users/user@example.com/sendMail"
+
+
+def _conn() -> HTTPSConnection:
+    return HTTPSConnection("graph.microsoft.com", 443)
+
+
+def _conn_refused() -> requests.exceptions.ConnectionError:
+    reason = NewConnectionError(
+        _conn(), "Failed to establish a new connection: [Errno 61] Connection refused"
+    )
+    return requests.exceptions.ConnectionError(MaxRetryError(None, _URL, reason))  # type: ignore[arg-type]
+
+
+def _dns_failure() -> requests.exceptions.ConnectionError:
+    reason = NameResolutionError(
+        "graph.microsoft.com", _conn(), socket.gaierror(8, "nodename nor servname")
+    )
+    return requests.exceptions.ConnectionError(MaxRetryError(None, _URL, reason))  # type: ignore[arg-type]
+
+
+def _conn_refused_as_context() -> requests.exceptions.ConnectionError:
+    """Only the implicit __context__ carries the urllib3 cause."""
+    try:
+        raise NewConnectionError(_conn(), "Connection refused")
+    except NewConnectionError:
+        try:
+            raise requests.exceptions.ConnectionError("connection failed")
+        except requests.exceptions.ConnectionError as exc:
+            return exc
+
+
+def _connect_timeout() -> requests.exceptions.ConnectTimeout:
+    reason = ConnectTimeoutError(_conn(), "Connection to graph timed out")
+    return requests.exceptions.ConnectTimeout(MaxRetryError(None, _URL, reason))  # type: ignore[arg-type]
+
+
+def _remote_disconnected() -> requests.exceptions.ConnectionError:
+    return requests.exceptions.ConnectionError(
+        ProtocolError(
+            "Connection aborted.",
+            RemoteDisconnected("Remote end closed connection without response"),
+        )
+    )
+
+
+def _connection_reset() -> requests.exceptions.ConnectionError:
+    return requests.exceptions.ConnectionError(
+        ProtocolError(
+            "Connection aborted.", ConnectionResetError(54, "Connection reset by peer")
+        )
+    )
+
+
+def _protocol_error_after_retries() -> requests.exceptions.ConnectionError:
+    reason = ProtocolError("Connection aborted.", RemoteDisconnected("closed"))
+    return requests.exceptions.ConnectionError(MaxRetryError(None, _URL, reason))  # type: ignore[arg-type]
+
+
+def _bare_connection_error() -> requests.exceptions.ConnectionError:
+    return requests.exceptions.ConnectionError("boom")
+
+
 @pytest.mark.parametrize(
-    "exc",
-    [
-        requests.exceptions.ConnectionError("conn refused"),
-        requests.exceptions.ConnectTimeout("connect timeout"),
-    ],
-    ids=["ConnectionError", "ConnectTimeout"],
+    "make_exc",
+    [_conn_refused, _dns_failure, _conn_refused_as_context, _connect_timeout],
 )
 @pytest.mark.parametrize(("operation", "ok_status", "prefix"), OPERATIONS)
-def test_connection_failures_raise_transient_from_exc(
+def test_connection_never_established_raises_transient_from_exc(
     monkeypatch: pytest.MonkeyPatch,
     account: GraphEmailAccount,
     validator: Mock,
     operation: Any,
     ok_status: int,
     prefix: str,
-    exc: Exception,
+    make_exc: Any,
 ) -> None:
+    exc = make_exc()
     _patch_post(monkeypatch, exc)
 
     with pytest.raises(EmailTransientError, match=f"^{prefix}: ") as info:
@@ -220,6 +293,36 @@ def test_connection_failures_raise_transient_from_exc(
 
     assert info.value.__cause__ is exc
     assert info.value.status_code is None
+
+
+@pytest.mark.parametrize(
+    "make_exc",
+    [
+        _remote_disconnected,
+        _connection_reset,
+        _protocol_error_after_retries,
+        _bare_connection_error,
+    ],
+)
+@pytest.mark.parametrize(("operation", "ok_status", "prefix"), OPERATIONS)
+def test_connection_lost_after_connect_raises_permanent_from_exc(
+    monkeypatch: pytest.MonkeyPatch,
+    account: GraphEmailAccount,
+    validator: Mock,
+    operation: Any,
+    ok_status: int,
+    prefix: str,
+    make_exc: Any,
+) -> None:
+    """The request may have reached Graph: retrying could send it twice."""
+    exc = make_exc()
+    _patch_post(monkeypatch, exc)
+
+    with pytest.raises(EmailPermanentError, match=f"^{prefix}: ") as info:
+        operation(account)
+
+    assert info.value.__cause__ is exc
+    assert "may have been accepted" in str(info.value)
 
 
 @pytest.mark.parametrize(
@@ -247,6 +350,15 @@ def test_ambiguous_or_invalid_requests_raise_permanent_from_exc(
         operation(account)
 
     assert info.value.__cause__ is exc
+
+
+def test_read_timeout_message_notes_possible_acceptance(
+    monkeypatch: pytest.MonkeyPatch, account: GraphEmailAccount, validator: Mock
+) -> None:
+    _patch_post(monkeypatch, requests.exceptions.ReadTimeout("read timeout"))
+
+    with pytest.raises(EmailPermanentError, match="may have been accepted"):
+        _send_email(account)
 
 
 # ---------------------------------------------------------------------------

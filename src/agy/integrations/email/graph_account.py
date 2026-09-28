@@ -6,11 +6,18 @@ import base64
 import logging
 import re
 from html import escape
+from http.client import HTTPException
 from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import requests
+from urllib3.exceptions import (
+    ConnectTimeoutError,
+    NewConnectionError,
+    ProtocolError,
+    ReadTimeoutError,
+)
 
 from ._graph_api import GraphAPI
 from .account import EmailAccount
@@ -30,8 +37,55 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Graph rejected the request without processing it; safe to retry later.
-_TRANSIENT_STATUS_CODES = frozenset({429, 503, 504})
+# Graph (or its gateway) did not process the request; safe to retry later.
+_TRANSIENT_STATUS_CODES = frozenset({429, 502, 503, 504})
+
+_MAYBE_ACCEPTED = (
+    "request may have been accepted by Graph; not retried to avoid duplicates"
+)
+
+# urllib3 causes proving the TCP/TLS connection was never established.
+_PRE_CONNECT_CAUSES: tuple[type[BaseException], ...] = (
+    NewConnectionError,  # includes NameResolutionError
+    ConnectTimeoutError,
+)
+# Causes showing the connection was up, so the request may have been sent.
+_POST_CONNECT_CAUSES: tuple[type[BaseException], ...] = (
+    ProtocolError,
+    ReadTimeoutError,
+    HTTPException,
+)
+
+
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """All exceptions reachable from ``exc`` via args, ``reason`` and chaining.
+
+    requests wraps urllib3 errors as ``ConnectionError(MaxRetryError(...))``
+    with the real cause in ``MaxRetryError.reason``, or as
+    ``ConnectionError(ProtocolError(msg, cause))``.
+    """
+    found: list[BaseException] = []
+    seen: set[int] = set()
+    stack: list[object] = [exc]
+    while stack:
+        current = stack.pop()
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        found.append(current)
+        stack.extend(current.args)
+        stack.append(getattr(current, "reason", None))
+        stack.append(current.__cause__)
+        stack.append(current.__context__)
+    return found
+
+
+def _connection_never_established(exc: BaseException) -> bool:
+    """True only if the request provably never reached the server."""
+    chain = _exception_chain(exc)
+    if any(isinstance(e, _POST_CONNECT_CAUSES) for e in chain):
+        return False
+    return any(isinstance(e, _PRE_CONNECT_CAUSES) for e in chain)
 
 
 def _http_send_error(prefix: str, resp: requests.Response) -> EmailSendError:
@@ -51,19 +105,22 @@ def _request_send_error(
 ) -> EmailSendError:
     """Classify a ``requests`` failure for an outbound operation.
 
-    Connection failures (including connect timeouts) happen before Graph
-    received the request and are transient. A ``ReadTimeout`` is ambiguous:
-    Graph may already have accepted the message, so retrying could send it
-    twice. It is therefore reported as permanent, like any other error.
+    Transient only when the request provably never reached Graph: a connect
+    timeout, or a ``ConnectionError`` caused by a failure to establish the
+    connection (refused, DNS failure). A ``ReadTimeout`` or any other
+    ``ConnectionError`` (e.g. "Connection aborted", remote disconnect after
+    sending) is ambiguous: Graph may already have accepted the message, so a
+    retry could send it twice. Those, like all other errors, are permanent.
     """
     message = f"{prefix}: {exc}"
     if isinstance(exc, requests.exceptions.ReadTimeout):
-        return EmailPermanentError(message)
-    if isinstance(
-        exc,
-        (requests.exceptions.ConnectionError, requests.exceptions.ConnectTimeout),
-    ):
+        return EmailPermanentError(f"{message} ({_MAYBE_ACCEPTED})")
+    if isinstance(exc, requests.exceptions.ConnectTimeout):
         return EmailTransientError(message)
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        if _connection_never_established(exc):
+            return EmailTransientError(message)
+        return EmailPermanentError(f"{message} ({_MAYBE_ACCEPTED})")
     return EmailPermanentError(message)
 
 
@@ -480,8 +537,10 @@ class GraphEmailAccount(EmailAccount):
         retried once (Graph rejects the request before processing it).
 
         Raises:
-            EmailTransientError: 429/503/504 or a connection failure.
-            EmailPermanentError: any other failure (including ``ReadTimeout``).
+            EmailTransientError: 429/502/503/504, or the connection could not
+                be established.
+            EmailPermanentError: any other failure, including ambiguous ones
+                (``ReadTimeout``, connection lost after connecting).
         """
         resp = self._post_once(url, error_prefix, False, **kwargs)
         if resp.status_code == 401:
