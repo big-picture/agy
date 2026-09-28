@@ -3,6 +3,7 @@
 Public API:
     Email - Email dataclass with bound account methods
     Attachment - Email attachment dataclass
+    EmailBodyType - Body format of Email.text (text or html)
     EmailAccount - Abstract base class for email accounts
     GraphEmailAccount - Microsoft Graph implementation
     GraphWellKnownFolder - Microsoft Graph system folder names
@@ -14,7 +15,7 @@ Public API:
 from __future__ import annotations
 
 from .account import EmailAccount
-from .email import Attachment, Email
+from .email import Attachment, Email, EmailBodyType
 from .mock_account import MockEmailAccount
 
 # Provider-specific accounts are imported lazily to keep optional dependencies
@@ -41,6 +42,7 @@ def __getattr__(name: str):
 __all__ = [
     "Email",
     "Attachment",
+    "EmailBodyType",
     "EmailAccount",
     "GraphEmailAccount",
     "GraphWellKnownFolder",

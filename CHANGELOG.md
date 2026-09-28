@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `EmailBodyType` (`TEXT` / `HTML`) exported from `agy.integrations.email`.
+  Graph `send_email` and `create_draft` send `Email.text` unchanged when
+  `Email.body_type` is `EmailBodyType.HTML`; plain text keeps the existing
+  escaping and newline conversion. `Email.create(...)` accepts `body_type`.
+- `GraphEmailAccount.send_draft(email_or_id, *, draft_only=False)` sends an
+  existing draft via `POST /users/{user}/messages/{id}/send`, with the same
+  Graph recipient safety check as `send_email`. Also available as
+  `Email.send_draft()` and as an optional `EmailAccount.send_draft` (default
+  raises `NotImplementedError`).
+
+### Changed
+
+- `EmailAccount.create_draft` is annotated `-> str | None`;
+  `GraphEmailAccount.create_draft` returns the new draft id (still also set on
+  `email.message_id`).
+
+### Fixed
+
+- `GraphEmailAccount.create_draft` now includes Cc recipients and file
+  attachments, so drafts (including `send_email` redirected by draft-only mode)
+  match what `send_email` would send. Send and draft share one payload builder.
+
 ## [1.1.1] - 2026-08-10
 
 ### Added
