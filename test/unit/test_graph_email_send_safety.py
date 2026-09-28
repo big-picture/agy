@@ -663,18 +663,42 @@ def test_send_draft_uses_stored_subject_when_caller_has_none(
 @pytest.mark.parametrize(
     ("response", "error", "match"),
     [
-        (_resp(503), EmailTransientError, "^Failed to load draft: HTTP 503"),
-        (_resp(502), EmailTransientError, "^Failed to load draft: HTTP 502"),
-        (_resp(404), EmailPermanentError, "^Failed to load draft: HTTP 404"),
+        (_resp(503), EmailTransientError, "^Failed to load draft: HTTP 503$"),
+        (_resp(502), EmailTransientError, "^Failed to load draft: HTTP 502$"),
+        (_resp(404), EmailPermanentError, "^Failed to load draft: HTTP 404$"),
         (_conn_refused(), EmailTransientError, "^Failed to load draft: "),
-        (_remote_disconnected(), EmailPermanentError, "may have been accepted"),
+        # The load is an idempotent GET: ambiguous failures are safe to retry.
+        (_remote_disconnected(), EmailTransientError, "^Failed to load draft: "),
+        (_connection_reset(), EmailTransientError, "^Failed to load draft: "),
+        (
+            _protocol_error_after_retries(),
+            EmailTransientError,
+            "^Failed to load draft: ",
+        ),
+        (_bare_connection_error(), EmailTransientError, "^Failed to load draft: "),
         (
             requests.exceptions.ReadTimeout("read timeout"),
+            EmailTransientError,
+            "^Failed to load draft: ",
+        ),
+        (
+            requests.exceptions.InvalidURL("bad url"),
             EmailPermanentError,
             "^Failed to load draft: ",
         ),
     ],
-    ids=["503", "502", "404", "refused", "aborted", "read-timeout"],
+    ids=[
+        "503",
+        "502",
+        "404",
+        "refused",
+        "aborted",
+        "reset",
+        "protocol-after-retries",
+        "bare-connection-error",
+        "read-timeout",
+        "invalid-url",
+    ],
 )
 def test_send_draft_envelope_load_failures_are_typed(
     monkeypatch: pytest.MonkeyPatch,
@@ -693,10 +717,41 @@ def test_send_draft_envelope_load_failures_are_typed(
         _send_draft(account)
 
     assert isinstance(info.value, RuntimeError)
+    assert "may have been accepted" not in str(info.value)
     if isinstance(response, Exception):
         assert info.value.__cause__ is response
     assert post.calls == []
     validator.validate_recipients.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "make_exc",
+    [
+        _remote_disconnected,
+        _connection_reset,
+        _bare_connection_error,
+        lambda: requests.exceptions.ReadTimeout("read timeout"),
+    ],
+    ids=["aborted", "reset", "bare-connection-error", "read-timeout"],
+)
+def test_send_draft_ambiguous_failure_on_send_post_stays_permanent(
+    monkeypatch: pytest.MonkeyPatch,
+    account: GraphEmailAccount,
+    validator: Mock,
+    draft_get: _Recorder,
+    make_exc: Any,
+) -> None:
+    """Same failure: transient on the envelope GET, permanent on the /send POST."""
+    exc = make_exc()
+    _patch_post(monkeypatch, exc)
+
+    with pytest.raises(EmailPermanentError, match="^Failed to send draft: ") as info:
+        _send_draft(account)
+
+    assert not isinstance(info.value, EmailTransientError)
+    assert "may have been accepted" in str(info.value)
+    assert info.value.__cause__ is exc
+    assert len(draft_get.calls) == 1
 
 
 def test_send_draft_envelope_load_retries_once_on_401(

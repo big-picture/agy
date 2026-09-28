@@ -101,11 +101,20 @@ def _http_send_error(prefix: str, resp: requests.Response) -> EmailSendError:
 
 
 def _request_send_error(
-    prefix: str, exc: requests.exceptions.RequestException
+    prefix: str,
+    exc: requests.exceptions.RequestException,
+    *,
+    idempotent: bool = False,
 ) -> EmailSendError:
     """Classify a ``requests`` failure for an outbound operation.
 
-    Transient only when the request provably never reached Graph: a connect
+    For an idempotent read (``idempotent=True``, e.g. loading a draft) any
+    timeout or connection failure is transient: repeating it cannot duplicate
+    anything. TLS errors (``SSLError``) stay permanent.
+
+    Non-idempotent requests (send, create) are classified conservatively:
+
+    transient only when the request provably never reached Graph: a connect
     timeout, or a ``ConnectionError`` caused by a failure to establish the
     connection (refused, DNS failure). A ``ReadTimeout`` or any other
     ``ConnectionError`` (e.g. "Connection aborted", remote disconnect after
@@ -113,6 +122,12 @@ def _request_send_error(
     retry could send it twice. Those, like all other errors, are permanent.
     """
     message = f"{prefix}: {exc}"
+    if idempotent:
+        if isinstance(
+            exc, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+        ) and not isinstance(exc, requests.exceptions.SSLError):
+            return EmailTransientError(message)
+        return EmailPermanentError(message)
     if isinstance(exc, requests.exceptions.ReadTimeout):
         return EmailPermanentError(f"{message} ({_MAYBE_ACCEPTED})")
     if isinstance(exc, requests.exceptions.ConnectTimeout):
@@ -533,9 +548,15 @@ class GraphEmailAccount(EmailAccount):
         url: str,
         error_prefix: str,
         ok_status: int,
+        *,
+        idempotent: bool = False,
         **kwargs: Any,
     ) -> requests.Response:
         """Run a Graph request of an outbound flow, raising typed errors.
+
+        Set ``idempotent=True`` for reads: ambiguous failures (read timeout,
+        connection lost after connecting) are then transient instead of
+        permanent, since repeating a read cannot send anything twice.
 
         On HTTP 401 the access token is refreshed once and the request is
         retried once (Graph rejects the request before processing it).
@@ -546,12 +567,16 @@ class GraphEmailAccount(EmailAccount):
             EmailPermanentError: any other failure, including ambiguous ones
                 (``ReadTimeout``, connection lost after connecting).
         """
-        resp = self._request_once(method, url, error_prefix, False, **kwargs)
+        resp = self._request_once(
+            method, url, error_prefix, False, idempotent, **kwargs
+        )
         if resp.status_code == 401:
             logger.warning(
                 "%s: HTTP 401, refreshing Graph token and retrying once", error_prefix
             )
-            resp = self._request_once(method, url, error_prefix, True, **kwargs)
+            resp = self._request_once(
+                method, url, error_prefix, True, idempotent, **kwargs
+            )
         if resp.status_code != ok_status:
             logger.error(
                 "%s: HTTP %s: %s", error_prefix, resp.status_code, resp.text[:500]
@@ -565,6 +590,7 @@ class GraphEmailAccount(EmailAccount):
         url: str,
         error_prefix: str,
         force_refresh_token: bool,
+        idempotent: bool,
         **kwargs: Any,
     ) -> requests.Response:
         headers = self._get_headers(force_refresh_token=force_refresh_token)
@@ -573,7 +599,7 @@ class GraphEmailAccount(EmailAccount):
             return send(url, headers=headers, timeout=30, **kwargs)
         except requests.exceptions.RequestException as exc:
             logger.error("%s: %s", error_prefix, exc)
-            raise _request_send_error(error_prefix, exc) from exc
+            raise _request_send_error(error_prefix, exc, idempotent=idempotent) from exc
 
     def _load_draft_envelope(self, email: Email) -> None:
         """Set To/Cc (and an empty subject) of ``email`` from the stored draft.
@@ -583,7 +609,7 @@ class GraphEmailAccount(EmailAccount):
         url = f"{self._message_url_base()}/{email.message_id}"
         params = {"$select": "id,subject,toRecipients,ccRecipients"}
         resp = self._outbound_request(
-            "get", url, "Failed to load draft", 200, params=params
+            "get", url, "Failed to load draft", 200, idempotent=True, params=params
         )
         loaded = self._graph_message_to_email(_as_dict(resp.json()))
         email.recipient = loaded.recipient
