@@ -12,6 +12,7 @@ from agy.integrations.email import Email, GmailEmailAccount, GraphEmailAccount
 def _validator_ok(provider=None) -> Mock:
     validator = Mock()
     validator.validate_forward.return_value = (True, "")
+    validator.validate_recipients.return_value = (True, "")
     validator.validate_reply.return_value = (True, "")
     return validator
 

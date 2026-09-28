@@ -403,11 +403,7 @@ class GraphEmailAccount(EmailAccount):
             self.create_draft(email, "drafts")
             return email
 
-        from .email_safety import get_validator
-
-        is_valid, error_msg = get_validator("graph").validate_forward(email.recipient)
-        if not is_valid:
-            raise EmailSafetyError(f"Safety check failed: {error_msg}")
+        self._check_recipients_allowed(email)
 
         url = f"{self.GRAPH_ROOT}/users/{self.user_email}/sendMail"
         message = self._build_message_payload(email)
@@ -449,17 +445,34 @@ class GraphEmailAccount(EmailAccount):
         if not email.recipient:
             self._load_draft_envelope(email)
 
-        from .email_safety import get_validator
-
-        is_valid, error_msg = get_validator("graph").validate_forward(email.recipient)
-        if not is_valid:
-            raise EmailSafetyError(f"Safety check failed: {error_msg}")
+        self._check_recipients_allowed(email)
 
         url = f"{self._message_url_base()}/{email.message_id}/send"
         self._post_outbound(url, "Failed to send draft", 202)
         email.sender = self.user_email
         email.account = self
         return email
+
+    @staticmethod
+    def _check_recipients_allowed(email: Email) -> None:
+        """Validate each To and Cc address against the Graph allowlist.
+
+        Raises:
+            EmailSafetyError: if any address is not allowed.
+        """
+        from .email_safety import get_validator
+
+        addresses = [
+            addr.strip()
+            for field in (email.recipient, email.cc)
+            for addr in (field or "").split(",")
+            if addr.strip()
+        ]
+        is_valid, error_msg = get_validator("graph").validate_recipients(
+            addresses, operation="send"
+        )
+        if not is_valid:
+            raise EmailSafetyError(f"Safety check failed: {error_msg}")
 
     def _post_outbound(
         self, url: str, error_prefix: str, ok_status: int, **kwargs: Any

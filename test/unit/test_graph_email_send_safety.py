@@ -290,3 +290,96 @@ def test_safety_failure_raises_safety_error_with_legacy_prefix(
         _send_draft(account)
 
     assert post.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Per-address recipient validation with the real validator
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def real_validator(monkeypatch: pytest.MonkeyPatch):
+    from agy.integrations.email.email_safety import EmailSafetyValidator
+
+    v = EmailSafetyValidator(allowed_domains=["example.com"], allowed_addresses=[])
+    monkeypatch.setattr(
+        "agy.integrations.email.email_safety.get_validator",
+        lambda provider=None: v,
+    )
+    return v
+
+
+@pytest.mark.parametrize(
+    ("to", "cc"),
+    [
+        ("x@evil.org, a@example.com", ""),  # used to pass: last domain only
+        ("a@example.com", "x@evil.org"),  # Cc used to be unchecked
+        ("a@example.com", "b@example.com, Eve <x@evil.org>"),
+    ],
+)
+def test_send_email_rejects_any_disallowed_to_or_cc(
+    monkeypatch: pytest.MonkeyPatch,
+    account: GraphEmailAccount,
+    real_validator: Any,
+    to: str,
+    cc: str,
+) -> None:
+    post = _patch_post(monkeypatch, _resp(202))
+
+    with pytest.raises(EmailSafetyError, match="^Safety check failed: .*x@evil.org"):
+        account.send_email(Email(recipient=to, cc=cc, subject="s", text="t"))
+
+    assert post.calls == []
+
+
+def test_send_email_accepts_all_allowed_to_and_cc(
+    monkeypatch: pytest.MonkeyPatch, account: GraphEmailAccount, real_validator: Any
+) -> None:
+    post = _patch_post(monkeypatch, _resp(202))
+
+    account.send_email(
+        Email(
+            recipient="a@example.com, B <b@example.com>",
+            cc="c@example.com",
+            subject="s",
+            text="t",
+        )
+    )
+
+    assert len(post.calls) == 1
+
+
+def test_send_draft_rejects_disallowed_cc_loaded_from_graph(
+    monkeypatch: pytest.MonkeyPatch, account: GraphEmailAccount, real_validator: Any
+) -> None:
+    get = _Recorder(
+        Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "id": "d1",
+                    "toRecipients": [{"emailAddress": {"address": "a@example.com"}}],
+                    "ccRecipients": [{"emailAddress": {"address": "x@evil.org"}}],
+                }
+            ),
+        )
+    )
+    monkeypatch.setattr("agy.integrations.email.graph_account.requests.get", get)
+    post = _patch_post(monkeypatch, _resp(202))
+
+    with pytest.raises(EmailSafetyError, match="x@evil.org"):
+        account.send_draft("d1")
+
+    assert post.calls == []
+
+
+def test_create_draft_and_draft_only_still_bypass_allowlist(
+    monkeypatch: pytest.MonkeyPatch, account: GraphEmailAccount, real_validator: Any
+) -> None:
+    post = _patch_post(monkeypatch, _resp(201), _resp(201))
+    email = Email(recipient="x@evil.org", cc="y@evil.org")
+
+    account.create_draft(email, "drafts")
+    account.send_email(email, draft_only=True)
+
+    assert len(post.calls) == 2

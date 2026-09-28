@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Iterable
 
 from dotenv import load_dotenv
 
@@ -34,7 +35,11 @@ class EmailSafetyValidator:
             allowed_addresses: List of specific allowed email addresses.
             provider: When set, load allowlists from {PROVIDER}_ALLOWED_EMAIL_* env.
         """
-        if allowed_domains is None and allowed_addresses is None and provider is not None:
+        if (
+            allowed_domains is None
+            and allowed_addresses is None
+            and provider is not None
+        ):
             config = get_safety_config(provider)
             allowed_domains = config["allowed_domains"]
             allowed_addresses = config["allowed_addresses"]
@@ -83,6 +88,25 @@ class EmailSafetyValidator:
             return email_address.split("@")[-1].lower().strip()
         return None
 
+    @staticmethod
+    def extract_address(email_address: str) -> str:
+        """Return the bare address of ``addr`` or ``Name <addr>`` (stripped)."""
+        email_address = (email_address or "").strip()
+        match = re.search(r"<([^>]+)>", email_address)
+        if match:
+            email_address = match.group(1).strip()
+        return email_address
+
+    @staticmethod
+    def split_addresses(addresses: Iterable[str]) -> list[str]:
+        """Split comma-separated entries into individual, non-empty addresses."""
+        return [
+            part.strip()
+            for entry in addresses
+            for part in (entry or "").split(",")
+            if part.strip()
+        ]
+
     def is_allowed_domain(self, domain: str) -> bool:
         """Check if domain is in the allowed list."""
         if not domain:
@@ -125,6 +149,27 @@ class EmailSafetyValidator:
         )
         logger.warning("SAFETY CHECK FAILED for %s: %s", operation, error_msg)
         return False, error_msg
+
+    def validate_recipients(
+        self, addresses: Iterable[str], operation: str = "send"
+    ) -> tuple[bool, str]:
+        """Validate every recipient address individually.
+
+        Each item may be a single address, ``Name <addr>``, or a comma-separated
+        list of those (e.g. ``Email.recipient`` and ``Email.cc``). All addresses
+        must pass; the first rejection is returned. An empty set of recipients
+        is rejected.
+        """
+        parsed = self.split_addresses(addresses)
+        if not parsed:
+            return False, "No recipient addresses given"
+        for entry in parsed:
+            is_valid, error_msg = self.validate_recipient(
+                self.extract_address(entry), operation=operation
+            )
+            if not is_valid:
+                return False, error_msg
+        return True, ""
 
     def validate_reply(self, original_from_address: str) -> tuple[bool, str]:
         """Validate that replying to an email is safe."""
