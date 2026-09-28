@@ -194,6 +194,12 @@ disable_error_code = [
     "dict-item",
 ]
 
+# `deprecated` >= 3.0 (via atlassian-python-api) uses PEP 695 `type` statements,
+# which mypy rejects under python_version 3.11. Don't analyze it.
+[[tool.mypy.overrides]]
+module = ["deprecated", "deprecated.*"]
+follow_imports = "skip"
+
 [[tool.mypy.overrides]]
 module = [
     "pdfplumber.*",
