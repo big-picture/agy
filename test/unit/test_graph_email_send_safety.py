@@ -81,6 +81,31 @@ def _no_draft_only_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+def _draft_envelope(
+    to: tuple[str, ...] = ("to@example.com",), cc: tuple[str, ...] = ()
+) -> Mock:
+    """GET /messages/{id} response for a stored draft's envelope."""
+    return Mock(
+        status_code=200,
+        json=Mock(
+            return_value={
+                "id": "d1",
+                "subject": "Stored subject",
+                "toRecipients": [{"emailAddress": {"address": a}} for a in to],
+                "ccRecipients": [{"emailAddress": {"address": a}} for a in cc],
+            }
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def draft_get(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
+    """send_draft always loads the stored draft's recipients first."""
+    recorder = _Recorder(*[_draft_envelope() for _ in range(5)])
+    monkeypatch.setattr("agy.integrations.email.graph_account.requests.get", recorder)
+    return recorder
+
+
 def _patch_post(monkeypatch: pytest.MonkeyPatch, *responses: Any) -> _Recorder:
     recorder = _Recorder(*responses)
     monkeypatch.setattr("agy.integrations.email.graph_account.requests.post", recorder)
@@ -577,3 +602,114 @@ def test_no_token_refresh_without_401(
     assert len(post.calls) == 1
     for call in account.api._get_headers.call_args_list:
         assert not call.kwargs.get("force_refresh_token")
+
+
+# ---------------------------------------------------------------------------
+# send_draft validates the stored draft's recipients
+# ---------------------------------------------------------------------------
+
+
+def test_send_draft_validates_stored_cc_even_if_caller_passed_recipients(
+    monkeypatch: pytest.MonkeyPatch,
+    account: GraphEmailAccount,
+    real_validator: Any,
+    draft_get: _Recorder,
+) -> None:
+    monkeypatch.setattr(
+        "agy.integrations.email.graph_account.requests.get",
+        get := _Recorder(_draft_envelope(("a@example.com",), ("x@evil.org",))),
+    )
+    post = _patch_post(monkeypatch, _resp(202))
+
+    with pytest.raises(EmailSafetyError, match="^Safety check failed: .*x@evil.org"):
+        account.send_draft(
+            Email(recipient="a@example.com", cc="", subject="S", message_id="d1")
+        )
+
+    assert get.calls[0]["url"] == f"{GRAPH}/users/user@example.com/messages/d1"
+    assert post.calls == []
+
+
+def test_send_draft_validates_stored_to_not_caller_to(
+    monkeypatch: pytest.MonkeyPatch, account: GraphEmailAccount, validator: Mock
+) -> None:
+    monkeypatch.setattr(
+        "agy.integrations.email.graph_account.requests.get",
+        _Recorder(_draft_envelope(("server@example.com",), ("cc@example.com",))),
+    )
+    _patch_post(monkeypatch, _resp(202))
+    email = Email(recipient="caller@example.com", subject="Mine", message_id="d1")
+
+    result = account.send_draft(email)
+
+    validator.validate_recipients.assert_called_once_with(
+        ["server@example.com", "cc@example.com"], operation="send"
+    )
+    assert result.recipient == "server@example.com"
+    assert result.cc == "cc@example.com"
+    assert result.subject == "Mine"
+
+
+def test_send_draft_uses_stored_subject_when_caller_has_none(
+    account: GraphEmailAccount, validator: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_post(monkeypatch, _resp(202))
+
+    result = account.send_draft("d1")
+
+    assert result.subject == "Stored subject"
+
+
+@pytest.mark.parametrize(
+    ("response", "error", "match"),
+    [
+        (_resp(503), EmailTransientError, "^Failed to load draft: HTTP 503"),
+        (_resp(502), EmailTransientError, "^Failed to load draft: HTTP 502"),
+        (_resp(404), EmailPermanentError, "^Failed to load draft: HTTP 404"),
+        (_conn_refused(), EmailTransientError, "^Failed to load draft: "),
+        (_remote_disconnected(), EmailPermanentError, "may have been accepted"),
+        (
+            requests.exceptions.ReadTimeout("read timeout"),
+            EmailPermanentError,
+            "^Failed to load draft: ",
+        ),
+    ],
+    ids=["503", "502", "404", "refused", "aborted", "read-timeout"],
+)
+def test_send_draft_envelope_load_failures_are_typed(
+    monkeypatch: pytest.MonkeyPatch,
+    account: GraphEmailAccount,
+    validator: Mock,
+    response: Any,
+    error: type[Exception],
+    match: str,
+) -> None:
+    monkeypatch.setattr(
+        "agy.integrations.email.graph_account.requests.get", _Recorder(response)
+    )
+    post = _patch_post(monkeypatch, _resp(202))
+
+    with pytest.raises(error, match=match) as info:
+        _send_draft(account)
+
+    assert isinstance(info.value, RuntimeError)
+    if isinstance(response, Exception):
+        assert info.value.__cause__ is response
+    assert post.calls == []
+    validator.validate_recipients.assert_not_called()
+
+
+def test_send_draft_envelope_load_retries_once_on_401(
+    monkeypatch: pytest.MonkeyPatch, validator: Mock
+) -> None:
+    account = _refreshing_account()
+    get = _Recorder(_resp(401), _draft_envelope())
+    monkeypatch.setattr("agy.integrations.email.graph_account.requests.get", get)
+    _patch_post(monkeypatch, _resp(202))
+
+    _send_draft(account)
+
+    assert [c["headers"]["Authorization"] for c in get.calls] == [
+        "Bearer stale",
+        "Bearer fresh",
+    ]

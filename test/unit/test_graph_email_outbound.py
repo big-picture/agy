@@ -68,6 +68,31 @@ def _no_draft_only_env(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+def _draft_envelope(
+    to: tuple[str, ...] = ("to@example.com",), cc: tuple[str, ...] = ()
+) -> Mock:
+    """GET /messages/{id} response for a stored draft's envelope."""
+    return Mock(
+        status_code=200,
+        json=Mock(
+            return_value={
+                "id": "d1",
+                "subject": "Stored subject",
+                "toRecipients": [{"emailAddress": {"address": a}} for a in to],
+                "ccRecipients": [{"emailAddress": {"address": a}} for a in cc],
+            }
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
+def draft_get(monkeypatch: pytest.MonkeyPatch) -> _Recorder:
+    """send_draft always loads the stored draft's recipients first."""
+    recorder = _Recorder(*[_draft_envelope() for _ in range(5)])
+    monkeypatch.setattr("agy.integrations.email.graph_account.requests.get", recorder)
+    return recorder
+
+
 def _patch_post(monkeypatch: pytest.MonkeyPatch, *responses: Any) -> _Recorder:
     recorder = _Recorder(*responses)
     monkeypatch.setattr("agy.integrations.email.graph_account.requests.post", recorder)
