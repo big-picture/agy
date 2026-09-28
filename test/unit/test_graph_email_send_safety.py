@@ -383,3 +383,85 @@ def test_create_draft_and_draft_only_still_bypass_allowlist(
     account.send_email(email, draft_only=True)
 
     assert len(post.calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# 401 -> refresh token once and retry once
+# ---------------------------------------------------------------------------
+
+
+def _refreshing_account() -> GraphEmailAccount:
+    api = Mock()
+    api._get_headers.side_effect = lambda force_refresh_token=False: {
+        "Authorization": "Bearer fresh" if force_refresh_token else "Bearer stale"
+    }
+    api.get_folder_id_by_name.return_value = "drafts-folder-id"
+    return GraphEmailAccount(api=api, user_email="user@example.com")
+
+
+@pytest.mark.parametrize(("operation", "ok_status", "prefix"), OPERATIONS)
+def test_401_refreshes_token_and_retries_once(
+    monkeypatch: pytest.MonkeyPatch,
+    validator: Mock,
+    operation: Any,
+    ok_status: int,
+    prefix: str,
+) -> None:
+    account = _refreshing_account()
+    ok = _resp(ok_status)
+    ok.json = Mock(return_value={"id": "draft-1"})
+    post = _patch_post(monkeypatch, _resp(401), ok)
+
+    operation(account)
+
+    assert [c["headers"]["Authorization"] for c in post.calls] == [
+        "Bearer stale",
+        "Bearer fresh",
+    ]
+    assert post.calls[0]["url"] == post.calls[1]["url"]
+    assert post.calls[0].get("json") == post.calls[1].get("json")
+    account.api._get_headers.assert_any_call(force_refresh_token=True)
+
+
+@pytest.mark.parametrize(("operation", "ok_status", "prefix"), OPERATIONS)
+def test_second_401_raises_permanent_without_further_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    validator: Mock,
+    operation: Any,
+    ok_status: int,
+    prefix: str,
+) -> None:
+    account = _refreshing_account()
+    post = _patch_post(monkeypatch, _resp(401), _resp(401), _resp(ok_status))
+
+    with pytest.raises(EmailPermanentError, match=f"^{prefix}: HTTP 401") as info:
+        operation(account)
+
+    assert info.value.status_code == 401
+    assert len(post.calls) == 2
+
+
+def test_retry_after_401_is_classified_like_any_response(
+    monkeypatch: pytest.MonkeyPatch, validator: Mock
+) -> None:
+    account = _refreshing_account()
+    _patch_post(monkeypatch, _resp(401), _resp(503, headers={"Retry-After": "12"}))
+
+    with pytest.raises(EmailTransientError) as info:
+        _send_email(account)
+
+    assert info.value.status_code == 503
+    assert info.value.retry_after == 12.0
+
+
+def test_no_token_refresh_without_401(
+    monkeypatch: pytest.MonkeyPatch, validator: Mock
+) -> None:
+    account = _refreshing_account()
+    post = _patch_post(monkeypatch, _resp(202))
+
+    _send_email(account)
+
+    assert len(post.calls) == 1
+    for call in account.api._get_headers.call_args_list:
+        assert not call.kwargs.get("force_refresh_token")

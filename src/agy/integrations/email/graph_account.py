@@ -137,8 +137,10 @@ class GraphEmailAccount(EmailAccount):
             )
         self.user_email: str = resolved_user_email
 
-    def _get_headers(self) -> dict[str, str]:
+    def _get_headers(self, force_refresh_token: bool = False) -> dict[str, str]:
         """Get HTTP headers for Graph API requests."""
+        if force_refresh_token:
+            return self.api._get_headers(force_refresh_token=True)
         return self.api._get_headers()
 
     def _message_url_base(self, folder_id: str | None = None) -> str:
@@ -479,21 +481,35 @@ class GraphEmailAccount(EmailAccount):
     ) -> requests.Response:
         """POST an outbound Graph request, raising typed errors on failure.
 
+        On HTTP 401 the access token is refreshed once and the request is
+        retried once (Graph rejects the request before processing it).
+
         Raises:
             EmailTransientError: 429/503/504 or a connection failure.
             EmailPermanentError: any other failure (including ``ReadTimeout``).
         """
-        try:
-            resp = requests.post(url, headers=self._get_headers(), timeout=30, **kwargs)
-        except requests.exceptions.RequestException as exc:
-            logger.error("%s: %s", error_prefix, exc)
-            raise _request_send_error(error_prefix, exc) from exc
+        resp = self._post_once(url, error_prefix, False, **kwargs)
+        if resp.status_code == 401:
+            logger.warning(
+                "%s: HTTP 401, refreshing Graph token and retrying once", error_prefix
+            )
+            resp = self._post_once(url, error_prefix, True, **kwargs)
         if resp.status_code != ok_status:
             logger.error(
                 "%s: HTTP %s: %s", error_prefix, resp.status_code, resp.text[:500]
             )
             raise _http_send_error(error_prefix, resp)
         return resp
+
+    def _post_once(
+        self, url: str, error_prefix: str, force_refresh_token: bool, **kwargs: Any
+    ) -> requests.Response:
+        headers = self._get_headers(force_refresh_token=force_refresh_token)
+        try:
+            return requests.post(url, headers=headers, timeout=30, **kwargs)
+        except requests.exceptions.RequestException as exc:
+            logger.error("%s: %s", error_prefix, exc)
+            raise _request_send_error(error_prefix, exc) from exc
 
     def _load_draft_envelope(self, email: Email) -> None:
         """Populate subject and To/Cc of ``email`` from the stored Graph draft."""
