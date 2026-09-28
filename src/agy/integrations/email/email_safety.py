@@ -16,6 +16,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+#: Allowed-domains entry that disables domain filtering (``*_ALLOWED_EMAIL_DOMAINS=*``).
+ALLOW_ALL_DOMAINS = "*"
+
 
 class EmailSafetyValidator:
     """Validates email addresses for safety before sending emails."""
@@ -60,6 +63,8 @@ class EmailSafetyValidator:
             address.lower() for address in (allowed_addresses or [])
         ]
         self.provider = provider
+        # "*" is an explicit opt-out of domain filtering (e.g. supplier mail).
+        self.allow_all = ALLOW_ALL_DOMAINS in self.allowed_domains
 
         logger.info(
             "EmailSafetyValidator initialized (%s) with %s allowed domains and %s allowed addresses",
@@ -67,7 +72,13 @@ class EmailSafetyValidator:
             len(self.allowed_domains),
             len(self.allowed_addresses),
         )
-        if self.allowed_domains:
+        if self.allow_all:
+            logger.warning(
+                "Email safety allowlist disabled for %s: allowed domains contain "
+                "'*', so recipients of any domain are allowed",
+                provider or "global",
+            )
+        elif self.allowed_domains:
             logger.info("Allowed domains: %s", ", ".join(self.allowed_domains))
         if self.allowed_addresses:
             logger.info("Allowed addresses: %s", ", ".join(self.allowed_addresses))
@@ -111,6 +122,8 @@ class EmailSafetyValidator:
         """Check if domain is in the allowed list."""
         if not domain:
             return False
+        if self.allow_all:
+            return True
         return domain.lower().strip() in self.allowed_domains
 
     def is_allowed_address(self, email_address: str) -> bool:
