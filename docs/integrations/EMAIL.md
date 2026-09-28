@@ -440,6 +440,36 @@ validates what will actually be sent. In draft-only mode
 (`draft_only=True`, `GRAPH_EMAIL_DRAFT_ONLY` or `EMAIL_DRAFT_ONLY`) the draft
 is left unsent.
 
+#### Send Errors and Retries
+
+Graph `send_email`, `send_draft` and `create_draft` raise typed errors from
+`agy.integrations.email`. All subclass `RuntimeError` and keep the existing
+message prefixes (`"Failed to send email: ..."`, `"Failed to send draft:
+..."`, `"Failed to create draft: ..."`, `"Safety check failed: ..."`), so
+existing `except RuntimeError` handlers keep working.
+
+| Error | When | Retry? |
+| ----- | ---- | ------ |
+| `EmailTransientError` (`status_code`, `retry_after`) | HTTP 429/503/504, connection error, connect timeout | Yes, after `retry_after` seconds (from `Retry-After`) if set |
+| `EmailPermanentError` (`status_code`) | Any other HTTP error, `ReadTimeout`, other request errors | No |
+| `EmailSafetyError` (subclass of `EmailPermanentError`) | A To/Cc address is not allowlisted | No |
+
+A `ReadTimeout` is deliberately permanent: Graph may already have accepted
+the message, so retrying could send it twice.
+
+```python
+from agy.integrations.email import EmailTransientError
+
+try:
+    account.send_email(email)
+except EmailTransientError as exc:
+    schedule_retry(delay=exc.retry_after or 60)
+```
+
+Access tokens are refreshed when fewer than 5 minutes of their lifetime
+(`expires_in`) remain. If Graph still answers a send/draft request with
+HTTP 401, the token is refreshed and the request retried once.
+
 ---
 
 ### GmailEmailAccount
@@ -642,6 +672,17 @@ Emails can only be sent to recipients matching the **active account's** allowlis
 
 - An address in `{PROVIDER}_ALLOWED_EMAIL_ADDRESSES`, OR
 - A domain in `{PROVIDER}_ALLOWED_EMAIL_DOMAINS`
+
+Graph `send_email` and `send_draft` check **every** To and Cc address
+individually (`Name <addr>` is supported); one disallowed address blocks the
+whole message with `EmailSafetyError`. The same check is available as
+`get_validator("graph").validate_recipients(addresses)`.
+
+Set the domains to `*` (`GRAPH_ALLOWED_EMAIL_DOMAINS=*`, or the deprecated
+`ALLOWED_EMAIL_DOMAINS=*`) to allow recipients of any domain, e.g. for mail to
+arbitrary supplier domains. A WARNING is logged once when this is active.
+Only a standalone `*` entry counts; patterns such as `*.example.com` are not
+supported. Leaving the variables unset keeps the default `big-picture.com`.
 
 When **draft-only** mode is active (`{PROVIDER}_EMAIL_DRAFT_ONLY`, deprecated
 `EMAIL_DRAFT_ONLY`, or per-call `draft_only=True` on

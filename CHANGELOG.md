@@ -18,8 +18,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Graph recipient safety check as `send_email`. Also available as
   `Email.send_draft()` and as an optional `EmailAccount.send_draft` (default
   raises `NotImplementedError`).
+- Typed outbound email errors in `agy.integrations.email` (module `errors`):
+  `EmailSendError(RuntimeError)`, `EmailTransientError` (`status_code`,
+  `retry_after`), `EmailPermanentError` (`status_code`) and `EmailSafetyError`.
+  Graph `send_email`, `send_draft` and `create_draft` raise them: 429/503/504
+  and connection failures are transient, `ReadTimeout` (the request may have
+  been accepted) and other failures are permanent. Messages keep their
+  prefixes, and `except RuntimeError` still catches them.
+- `EmailSafetyValidator.validate_recipients(addresses, operation="send")`
+  validates each address individually (plus `extract_address` /
+  `split_addresses` helpers).
+- `GRAPH_ALLOWED_EMAIL_DOMAINS=*` (or deprecated `ALLOWED_EMAIL_DOMAINS=*`)
+  allows recipients of any domain and logs a WARNING once.
 
 ### Changed
+
+- The cached Graph access token now honours `expires_in` and is refreshed
+  when fewer than 300 s remain. Graph send/draft requests refresh the token
+  and retry once on HTTP 401.
 
 - `EmailAccount.create_draft` is annotated `-> str | None`;
   `GraphEmailAccount.create_draft` returns the new draft id (still also set on
@@ -30,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GraphEmailAccount.create_draft` now includes Cc recipients and file
   attachments, so drafts (including `send_email` redirected by draft-only mode)
   match what `send_email` would send. Send and draft share one payload builder.
+- Graph `send_email` / `send_draft` validated the comma-joined To string as a
+  single address (only its last domain counted) and never checked Cc. Every
+  To and Cc address is now validated individually.
 
 ## [1.1.1] - 2026-08-10
 
