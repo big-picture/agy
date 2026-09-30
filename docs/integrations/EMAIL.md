@@ -187,6 +187,7 @@ The `Email` class represents an email message with bound account methods.
 | `text`        | `str`                  | Email body text             |
 | `cc`          | `str`                  | CC recipients               |
 | `reply_to`    | `str`                  | Reply-to address            |
+| `body_type`   | `str`                  | Format of `text`: `EmailBodyType.TEXT` / `EmailBodyType.HTML` (see below) |
 | `message_id`  | `str \| None`          | Unique message identifier   |
 | `attachments` | `list[Attachment]`     | List of attachments         |
 | `account`     | `EmailAccount \| None` | Bound email account         |
@@ -195,8 +196,9 @@ The `Email` class represents an email message with bound account methods.
 
 | Method                                                                                           | Returns | Description                                                                                                                                              |
 | ------------------------------------------------------------------------------------------------ | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Email.create(to, subject, text, sender="", cc="", attachments=None, account=None, folder=None)` | `Email` | Create a new email (class method)                                                                                                                        |
+| `Email.create(to, subject, text, sender="", cc="", attachments=None, account=None, folder=None, body_type="")` | `Email` | Create a new email (class method)                                                                                                                        |
 | `send()`                                                                                         | `Email` | Send this email                                                                                                                                          |
+| `send_draft()`                                                                                   | `Email` | Send this email, which must be an existing draft (`message_id` set). Graph only; other providers raise `NotImplementedError` |
 | `reply(text, *, subject=None, attachments=None)`                                                 | `Email` | Reply to the sender. `text`: body; `subject`: override reply subject (optional); `attachments`: list of `Attachment` objects (optional)                     |
 | `reply_all(text, *, subject=None, attachments=None)`                                             | `Email` | Reply to all recipients. Same parameters as `reply()`.                                                                                                    |
 | `forward(to)`                                                                                    | `Email` | Forward this email. `to`: recipient email address (str)                                                                                                  |
@@ -249,6 +251,8 @@ implement these methods.
 | `get_emails(folders=None, max_results=100, only_unread=False)`                                                                                                                             | `list[Email]` | Fetch emails from account |
 | `find_emails(folders=None, max_results=100, to_contains=None, from_contains=None, cc_contains=None, subject_contains=None, body_contains=None, has_attachments=None, email_contains=None)` | `list[Email]` | Search for emails         |
 | `send_email(email)`                                                                                                                                                                        | `Email`       | Send an email             |
+| `create_draft(email, folder)`                                                                                                                                                              | `str \| None` | Save an email as draft; Graph returns the draft id (also set on `email.message_id`) |
+| `send_draft(email_or_id, *, draft_only=False)`                                                                                                                                             | `Email`       | Send an existing draft. Optional operation, default raises `NotImplementedError` (implemented by Graph) |
 | `mark_unread_email(email)`                                                                                                                                                                 | `None`        | Mark an existing email as unread |
 
 *Example:*
@@ -400,6 +404,94 @@ Notes:
   nested custom path.
 - A slash inside a single custom folder `displayName` is not supported by path
   traversal; rename such folders before using them in a display-name path.
+
+#### HTML Bodies, Drafts, and Sending Drafts
+
+By default `Email.text` is plain text: Graph `send_email` / `create_draft`
+HTML-escape it and convert newlines to `<br/>`. Set
+`body_type=EmailBodyType.HTML` to send `text` unchanged as HTML (reply,
+forward and enrich are unaffected):
+
+```python
+from agy.integrations.email import Attachment, Email, EmailBodyType
+
+email = Email(
+    recipient="customer@company.com",
+    cc="team@company.com",
+    subject="Report",
+    text="<p>Hello <b>team</b></p>",
+    body_type=EmailBodyType.HTML,
+    attachments=[Attachment.from_path("report.pdf")],
+    account=account,
+)
+
+# Drafts contain the same To/Cc, body and file attachments that send_email
+# would send (also when send_email is redirected by GRAPH_EMAIL_DRAFT_ONLY).
+draft_id = account.create_draft(email, GraphWellKnownFolder.DRAFTS)
+
+# Later: send the prepared draft (POST /messages/{id}/send).
+account.send_draft(email)      # or account.send_draft(draft_id)
+```
+
+`send_draft` applies the same `GRAPH_ALLOWED_EMAIL_*` safety check as
+`send_email`. It always loads the stored draft's To/Cc/Bcc from Graph first and
+validates those, even if the email you pass has recipients, so the check
+covers what will actually be sent. The loaded To/Cc replace the email's
+`recipient`/`cc`; your `subject` is kept unless it is empty. In draft-only mode
+(`draft_only=True`, `GRAPH_EMAIL_DRAFT_ONLY` or `EMAIL_DRAFT_ONLY`) the draft
+is left unsent.
+
+#### Send Errors and Retries
+
+Graph `send_email`, `send_draft` (including loading the stored draft) and
+`create_draft` raise typed errors from
+`agy.integrations.email`. All subclass `RuntimeError` and keep the existing
+message prefixes (`"Failed to send email: ..."`, `"Failed to send draft:
+..."`, `"Failed to create draft: ..."`, `"Safety check failed: ..."`), so
+existing `except RuntimeError` handlers keep working.
+
+| Error | When | Retry? |
+| ----- | ---- | ------ |
+| `EmailTransientError` (`status_code`, `retry_after`) | HTTP 429/502/503/504; connect timeout; connection could not be established (refused, DNS failure) | Yes, after `retry_after` seconds (from `Retry-After`) if set |
+| `EmailPermanentError` (`status_code`) | Any other HTTP error; `ReadTimeout`; connection lost after connecting ("Connection aborted", remote disconnect, reset); other request errors | No |
+| `EmailSafetyError` (subclass of `EmailPermanentError`) | A To/Cc address or a stored draft's Bcc address is not allowlisted | No |
+
+A `ReadTimeout` or a connection dropped after connecting is deliberately
+permanent: Graph may already have accepted the message, so retrying could
+send it twice. The error message says so ("request may have been accepted by
+Graph ..."). This only applies to requests that send or create something.
+Loading the stored draft in `send_draft` is a read, so a read timeout or a
+dropped connection there is an `EmailTransientError`. The folder lookup in
+`create_draft` uses the same typed request handling, including token refresh,
+HTTP status classification and `Retry-After`. A missing folder is an
+`EmailPermanentError`.
+
+Malformed JSON or non-object responses during draft/folder reads are transient.
+A draft-creation response with malformed JSON or a missing, empty or non-string
+ID is permanent: Graph may have created the draft, so retrying could duplicate
+it. The email's existing ID is never reported as a newly created draft ID.
+
+Graph recipient payloads use the same address extraction as allowlist validation:
+`Alice <alice@example.com>` is sent as `alice@example.com` in To and Cc.
+
+```python
+from agy.integrations.email import EmailTransientError
+
+try:
+    account.send_email(email)
+except EmailTransientError as exc:
+    schedule_retry(delay=exc.retry_after or 60)
+```
+
+Access tokens are refreshed when fewer than 5 minutes of their lifetime
+(`expires_in`) remain. If Graph still answers a send/draft request with
+HTTP 401, the token is refreshed and the request retried once.
+Token request failures also use these typed errors. Timeouts and connection
+loss during token acquisition are transient because no message has been sent;
+TLS errors remain permanent. HTTP failures retain their status and retry delay.
+
+Graph's read path converts incoming HTML to plain text and marks the result
+as `EmailBodyType.TEXT`, so subsequent sends and drafts escape it correctly.
 
 ---
 
@@ -603,6 +695,17 @@ Emails can only be sent to recipients matching the **active account's** allowlis
 
 - An address in `{PROVIDER}_ALLOWED_EMAIL_ADDRESSES`, OR
 - A domain in `{PROVIDER}_ALLOWED_EMAIL_DOMAINS`
+
+Graph `send_email` and `send_draft` check **every** To and Cc address
+individually (`Name <addr>` is supported); one disallowed address blocks the
+whole message with `EmailSafetyError`. The same check is available as
+`get_validator("graph").validate_recipients(addresses)`.
+
+Set the domains to `*` (`GRAPH_ALLOWED_EMAIL_DOMAINS=*`, or the deprecated
+`ALLOWED_EMAIL_DOMAINS=*`) to allow recipients of any domain, e.g. for mail to
+arbitrary supplier domains. A WARNING is logged once when this is active.
+Only a standalone `*` entry counts; patterns such as `*.example.com` are not
+supported. Leaving the variables unset keeps the default `big-picture.com`.
 
 When **draft-only** mode is active (`{PROVIDER}_EMAIL_DRAFT_ONLY`, deprecated
 `EMAIL_DRAFT_ONLY`, or per-call `draft_only=True` on

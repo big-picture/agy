@@ -257,15 +257,36 @@ class EmailAccount(ABC):
         ...
 
     @abstractmethod
-    def create_draft(self, email: Email, folder: str) -> None:
+    def create_draft(self, email: Email, folder: str) -> str | None:
         """
         Save an email as draft in a folder.
 
         Args:
             email: email to save.
             folder: Target folder name.
+
+        Returns:
+            The draft's message id if the provider exposes one, else None.
         """
         ...
+
+    def send_draft(self, email: Email | str, *, draft_only: bool = False) -> Email:
+        """
+        Send a previously created draft (e.g. from ``create_draft``).
+
+        Optional operation: the default implementation raises
+        ``NotImplementedError``. Override in providers that support it.
+
+        Args:
+            email: Draft email (with ``message_id``) or the draft's message id.
+            draft_only: If True (or EMAIL_DRAFT_ONLY env), leave the draft unsent.
+
+        Returns:
+            The sent email.
+        """
+        raise NotImplementedError(
+            f"send_draft is not supported for {type(self).__name__}"
+        )
 
     def fetch_attachments(self, email: Email) -> None:
         """

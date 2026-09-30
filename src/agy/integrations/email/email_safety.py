@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from collections.abc import Iterable
 
 from dotenv import load_dotenv
 
@@ -14,6 +15,9 @@ from .env_config import ProviderKey, get_safety_config
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+#: Allowed-domains entry that disables domain filtering (``*_ALLOWED_EMAIL_DOMAINS=*``).
+ALLOW_ALL_DOMAINS = "*"
 
 
 class EmailSafetyValidator:
@@ -55,6 +59,8 @@ class EmailSafetyValidator:
             address.lower() for address in (allowed_addresses or [])
         ]
         self.provider = provider
+        # "*" is an explicit opt-out of domain filtering (e.g. supplier mail).
+        self.allow_all = ALLOW_ALL_DOMAINS in self.allowed_domains
 
         logger.info(
             "EmailSafetyValidator initialized (%s) with %s allowed domains and %s allowed addresses",
@@ -62,7 +68,13 @@ class EmailSafetyValidator:
             len(self.allowed_domains),
             len(self.allowed_addresses),
         )
-        if self.allowed_domains:
+        if self.allow_all:
+            logger.warning(
+                "Email safety allowlist disabled for %s: allowed domains contain "
+                "'*', so recipients of any domain are allowed",
+                provider or "global",
+            )
+        elif self.allowed_domains:
             logger.info("Allowed domains: %s", ", ".join(self.allowed_domains))
         if self.allowed_addresses:
             logger.info("Allowed addresses: %s", ", ".join(self.allowed_addresses))
@@ -83,10 +95,31 @@ class EmailSafetyValidator:
             return email_address.split("@")[-1].lower().strip()
         return None
 
+    @staticmethod
+    def extract_address(email_address: str) -> str:
+        """Return the bare address of ``addr`` or ``Name <addr>`` (stripped)."""
+        email_address = (email_address or "").strip()
+        match = re.search(r"<([^>]+)>", email_address)
+        if match:
+            email_address = match.group(1).strip()
+        return email_address
+
+    @staticmethod
+    def split_addresses(addresses: Iterable[str]) -> list[str]:
+        """Split comma-separated entries into individual, non-empty addresses."""
+        return [
+            part.strip()
+            for entry in addresses
+            for part in (entry or "").split(",")
+            if part.strip()
+        ]
+
     def is_allowed_domain(self, domain: str) -> bool:
         """Check if domain is in the allowed list."""
         if not domain:
             return False
+        if self.allow_all:
+            return True
         return domain.lower().strip() in self.allowed_domains
 
     def is_allowed_address(self, email_address: str) -> bool:
@@ -125,6 +158,27 @@ class EmailSafetyValidator:
         )
         logger.warning("SAFETY CHECK FAILED for %s: %s", operation, error_msg)
         return False, error_msg
+
+    def validate_recipients(
+        self, addresses: Iterable[str], operation: str = "send"
+    ) -> tuple[bool, str]:
+        """Validate every recipient address individually.
+
+        Each item may be a single address, ``Name <addr>``, or a comma-separated
+        list of those (e.g. ``Email.recipient`` and ``Email.cc``). All addresses
+        must pass; the first rejection is returned. An empty set of recipients
+        is rejected.
+        """
+        parsed = self.split_addresses(addresses)
+        if not parsed:
+            return False, "No recipient addresses given"
+        for entry in parsed:
+            is_valid, error_msg = self.validate_recipient(
+                self.extract_address(entry), operation=operation
+            )
+            if not is_valid:
+                return False, error_msg
+        return True, ""
 
     def validate_reply(self, original_from_address: str) -> tuple[bool, str]:
         """Validate that replying to an email is safe."""

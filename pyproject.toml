@@ -59,6 +59,7 @@ dependencies = [
     "google-api-python-client>=2.100.0",
     "requests>=2.31.0",
     "atlassian-python-api>=4.0.0",
+    "urllib3>=1.26",
 ]
 
 [project.optional-dependencies]
@@ -192,6 +193,12 @@ disable_error_code = [
     "union-attr",
     "dict-item",
 ]
+
+# `deprecated` >= 3.0 (via atlassian-python-api) uses PEP 695 `type` statements,
+# which mypy rejects under python_version 3.11. Don't analyze it.
+[[tool.mypy.overrides]]
+module = ["deprecated", "deprecated.*"]
+follow_imports = "skip"
 
 [[tool.mypy.overrides]]
 module = [
