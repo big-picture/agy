@@ -22,6 +22,7 @@ from urllib3.exceptions import (
 from ._graph_api import GraphAPI
 from .account import EmailAccount
 from .email import Attachment, Email, EmailBodyType
+from .email_safety import EmailSafetyValidator
 from .env_config import env_for
 from .errors import (
     EmailPermanentError,
@@ -225,9 +226,8 @@ class GraphEmailAccount(EmailAccount):
     def _recipients_payload(addresses: str) -> list[dict[str, Any]]:
         """Convert a comma-separated address string to Graph recipients."""
         return [
-            {"emailAddress": {"address": addr.strip()}}
-            for addr in (addresses or "").split(",")
-            if addr.strip()
+            {"emailAddress": {"address": EmailSafetyValidator.extract_address(addr)}}
+            for addr in EmailSafetyValidator.split_addresses([addresses])
         ]
 
     @staticmethod
@@ -611,6 +611,50 @@ class GraphEmailAccount(EmailAccount):
             logger.error("%s: %s", error_prefix, exc)
             raise _request_send_error(error_prefix, exc, idempotent=idempotent) from exc
 
+    @staticmethod
+    def _outbound_json(
+        resp: requests.Response, prefix: str, *, idempotent: bool = False
+    ) -> dict[str, Any]:
+        """Classify malformed success responses without risking duplicate drafts."""
+        error = EmailTransientError if idempotent else EmailPermanentError
+        suffix = "" if idempotent else f" ({_MAYBE_ACCEPTED})"
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise error(
+                f"{prefix}: invalid JSON{suffix}", status_code=resp.status_code
+            ) from exc
+        if not isinstance(data, dict):
+            raise error(
+                f"{prefix}: expected JSON object{suffix}", status_code=resp.status_code
+            )
+        return data
+
+    def _outbound_folder_json(self, url: str) -> dict[str, Any]:
+        prefix = "Failed to resolve draft folder"
+        resp = self._outbound_request("get", url, prefix, 200, idempotent=True)
+        data = self._outbound_json(resp, prefix, idempotent=True)
+        if "value" in data:
+            folders = data["value"]
+            valid = isinstance(folders, list) and all(
+                isinstance(folder, dict)
+                and isinstance(folder.get("id"), str)
+                and bool(folder["id"].strip())
+                and isinstance(folder.get("displayName"), str)
+                for folder in folders
+            )
+            valid = valid and (
+                data.get("@odata.nextLink") is None
+                or isinstance(data["@odata.nextLink"], str)
+            )
+        else:
+            valid = isinstance(data.get("id"), str) and bool(data["id"].strip())
+        if not valid:
+            raise EmailTransientError(
+                f"{prefix}: invalid folder response", status_code=resp.status_code
+            )
+        return data
+
     def _load_draft_envelope(self, email: Email) -> str:
         """Set To/Cc and an empty subject; return stored Bcc for validation.
 
@@ -621,7 +665,7 @@ class GraphEmailAccount(EmailAccount):
         resp = self._outbound_request(
             "get", url, "Failed to load draft", 200, idempotent=True, params=params
         )
-        data = _as_dict(resp.json())
+        data = self._outbound_json(resp, "Failed to load draft", idempotent=True)
         loaded = self._graph_message_to_email(data)
         email.recipient = loaded.recipient
         email.cc = loaded.cc
@@ -1056,9 +1100,10 @@ class GraphEmailAccount(EmailAccount):
             folder_name=folder,
             mailbox_type=self.mailbox_type,
             mailbox_upn=self.user_email,
+            get_json=self._outbound_folder_json,
         )
         if not folder_id:
-            raise RuntimeError(f"Folder '{folder}' not found")
+            raise EmailPermanentError(f"Folder '{folder}' not found")
 
         message = self._build_message_payload(email)
 
@@ -1067,8 +1112,14 @@ class GraphEmailAccount(EmailAccount):
         resp = self._outbound_request(
             "post", url, "Failed to create draft", 201, json=message
         )
-        data = _as_dict(resp.json())
-        email.message_id = _as_str(data.get("id")) or email.message_id
+        data = self._outbound_json(resp, "Failed to create draft")
+        draft_id = data.get("id")
+        if not isinstance(draft_id, str) or not draft_id.strip():
+            raise EmailPermanentError(
+                f"Failed to create draft: missing draft ID ({_MAYBE_ACCEPTED})",
+                status_code=resp.status_code,
+            )
+        email.message_id = draft_id
         email.account = self
         return email.message_id
 

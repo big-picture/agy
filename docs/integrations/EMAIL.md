@@ -461,7 +461,18 @@ permanent: Graph may already have accepted the message, so retrying could
 send it twice. The error message says so ("request may have been accepted by
 Graph ..."). This only applies to requests that send or create something.
 Loading the stored draft in `send_draft` is a read, so a read timeout or a
-dropped connection there is an `EmailTransientError`.
+dropped connection there is an `EmailTransientError`. The folder lookup in
+`create_draft` uses the same typed request handling, including token refresh,
+HTTP status classification and `Retry-After`. A missing folder is an
+`EmailPermanentError`.
+
+Malformed JSON or non-object responses during draft/folder reads are transient.
+A draft-creation response with malformed JSON or a missing, empty or non-string
+ID is permanent: Graph may have created the draft, so retrying could duplicate
+it. The email's existing ID is never reported as a newly created draft ID.
+
+Graph recipient payloads use the same address extraction as allowlist validation:
+`Alice <alice@example.com>` is sent as `alice@example.com` in To and Cc.
 
 ```python
 from agy.integrations.email import EmailTransientError

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Graph draft folder resolution now preserves typed request errors, retry delays
+  and token refresh across aliases, nested paths and paginated results.
+- Graph To/Cc payloads now extract the same bare addresses as allowlist validation.
+- Malformed Graph draft/folder responses raise typed outbound errors. Invalid
+  draft-creation responses and missing IDs are permanent failures to avoid
+  duplicate drafts; an existing message ID is no longer reused as success.
+
 ### Added
 
 - `EmailBodyType` (`TEXT` / `HTML`) exported from `agy.integrations.email`.

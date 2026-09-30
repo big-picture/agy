@@ -513,7 +513,11 @@ def test_send_draft_rejects_disallowed_cc_loaded_from_graph(
 def test_create_draft_and_draft_only_still_bypass_allowlist(
     monkeypatch: pytest.MonkeyPatch, account: GraphEmailAccount, real_validator: Any
 ) -> None:
-    post = _patch_post(monkeypatch, _resp(201), _resp(201))
+    post = _patch_post(
+        monkeypatch,
+        Mock(status_code=201, json=lambda: {"id": "draft-1"}),
+        Mock(status_code=201, json=lambda: {"id": "draft-2"}),
+    )
     email = Email(recipient="x@evil.org", cc="y@evil.org")
 
     account.create_draft(email, "drafts")

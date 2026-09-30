@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Callable
 from enum import StrEnum
 from typing import Any
 
@@ -665,6 +666,7 @@ class GraphAPI:
         *,
         mailbox_type: str = "personal",
         mailbox_upn: str | None = None,
+        get_json: Callable[[str], dict[str, Any]] | None = None,
     ) -> dict[str, Any] | None:
         """
         Resolve a folder by well-known name, alias, display name, or nested path.
@@ -681,6 +683,7 @@ class GraphAPI:
         Args:
             folder_reference: Folder name or path (use "/" for nested folders)
             mailbox_type: "personal" or "shared"
+            get_json: Optional typed JSON reader for outbound flows; errors propagate.
             mailbox_upn: User principal name for the mailbox
 
         Returns:
@@ -700,11 +703,13 @@ class GraphAPI:
         else:
             raise ValueError(f"Unknown mailbox_type: {mailbox_type}")
 
-        headers = self._get_headers()
+        headers = self._get_headers() if get_json is None else {}
         path_parts = folder_reference.split("/")
         if len(path_parts) == 1:
             well_known = _canonical_well_known_folder_name(folder_reference)
             if well_known:
+                if get_json is not None:
+                    return get_json(f"{base_url}/{well_known}")
                 try:
                     resp = requests.get(
                         f"{base_url}/{well_known}", headers=headers, timeout=30
@@ -732,11 +737,14 @@ class GraphAPI:
                 folders: list[dict] = []
                 next_url: str | None = url
                 while next_url:
-                    resp = requests.get(next_url, headers=headers, timeout=30)
-                    if resp.status_code != 200:
-                        _log_error(resp, f"Failed to get folders at level {i}")
-                        return None
-                    data = resp.json()
+                    if get_json is not None:
+                        data = get_json(next_url)
+                    else:
+                        resp = requests.get(next_url, headers=headers, timeout=30)
+                        if resp.status_code != 200:
+                            _log_error(resp, f"Failed to get folders at level {i}")
+                            return None
+                        data = resp.json()
                     folders.extend(data.get("value", []))
                     next_url = data.get("@odata.nextLink")
 
@@ -770,6 +778,7 @@ class GraphAPI:
         *,
         mailbox_type: str = "personal",
         mailbox_upn: str | None = None,
+        get_json: Callable[[str], dict[str, Any]] | None = None,
     ) -> str | None:
         """
         Get folder ID by folder name or path.
@@ -782,6 +791,7 @@ class GraphAPI:
         Args:
             folder_name: Folder name or path (use "/" for nested folders)
             mailbox_type: "personal" or "shared"
+            get_json: Optional typed JSON reader for outbound flows; errors propagate.
             mailbox_upn: User principal name for the mailbox
 
         Returns:
@@ -791,6 +801,7 @@ class GraphAPI:
             folder_name,
             mailbox_type=mailbox_type,
             mailbox_upn=mailbox_upn,
+            get_json=get_json,
         )
         folder_id = folder.get("id") if folder else None
         return folder_id if isinstance(folder_id, str) else None
