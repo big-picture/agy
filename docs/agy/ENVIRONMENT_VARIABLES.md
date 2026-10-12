@@ -12,7 +12,19 @@ Central reference for environment variables used by AGY runtime integrations.
 ## LLM Providers
 
 Used by `agy.contrib.llm_call` (`classify`, `respond`, `extract`, `model_call`
-paths):
+paths). Env **names** are configurable via `pyproject.toml`:
+
+```toml
+[tool.agy.providers.openai]
+api_key_env = "OPENAI_API_KEY"
+
+[tool.agy.providers.openai_azure]
+api_key_env = "AZURE_OPENAI_API_KEY"       # optional when using managed identity
+endpoint_env = "AZURE_OPENAI_ENDPOINT"
+# api_version = "2024-02-15-preview"       # optional
+```
+
+Defaults when those tables are omitted:
 
 - `OPENAI_API_KEY`
 - `AZURE_OPENAI_API_KEY` (legacy fallback: `OPENAI_API_AZURE_KEY`)
@@ -20,7 +32,12 @@ paths):
 - `GEMINI_API_KEY`
 - `ANTHROPIC_API_KEY`
 
-If a provider key/endpoint is missing, AGY raises a runtime error when that
+`openai_azure`: if the configured key env is unset/empty but the endpoint is
+set, AGY uses Azure AD via `DefaultAzureCredential` (`azure_ad_token_provider`).
+Install `agy[azure]` (`azure-identity`) for that path. On Azure (Container Apps
+Jobs, VMs with MI) no key secret is required; locally `az login` works.
+
+If a required key/endpoint is missing, AGY raises a runtime error when that
 provider is used.
 
 ## Jira Integration

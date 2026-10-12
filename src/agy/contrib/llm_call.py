@@ -8,7 +8,12 @@ import weakref
 from collections.abc import Callable
 from typing import Any
 
-from agy.config import load_llm_config
+from agy.config import get_provider_config, load_llm_config
+
+_COGNITIVE_SCOPE = "https://cognitiveservices.azure.com/.default"
+_AZURE_API_VERSION = "2024-02-15-preview"
+_DEFAULT_AZURE_KEY_ENVS = ("AZURE_OPENAI_API_KEY", "OPENAI_API_AZURE_KEY")
+_DEFAULT_AZURE_ENDPOINT_ENVS = ("AZURE_OPENAI_ENDPOINT", "OPENAI_AZURE_BASE_URL")
 
 
 def _require_text(value: Any, provider: str) -> str:
@@ -26,6 +31,12 @@ _sync_clients: dict[tuple[str, ...], Any] = {}
 _async_clients: "weakref.WeakKeyDictionary[Any, dict[tuple[str, ...], Any]]" = (
     weakref.WeakKeyDictionary()
 )
+
+
+def clear_provider_clients() -> None:
+    """Drop cached SDK clients (tests / credential rotation)."""
+    _sync_clients.clear()
+    _async_clients.clear()
 
 
 def _cached_sync_client(cache_key: tuple[str, ...], factory: Callable[[], Any]) -> Any:
@@ -55,11 +66,155 @@ def _cached_async_client(cache_key: tuple[str, ...], factory: Callable[[], Any])
     return client
 
 
-def _require_env(name: str, provider: str) -> str:
-    value = os.getenv(name)
+def _configured_env_name(provider: str, key: str) -> str | None:
+    """Return non-empty ``api_key_env`` / ``endpoint_env`` from provider config."""
+    raw = get_provider_config(provider).get(key)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
+
+
+def _resolve_env(configured_env: str | None, *fallback_env_names: str) -> tuple[str, str]:
+    """Return ``(value, env_name)`` using configured name then legacy fallbacks."""
+    if configured_env:
+        return (os.getenv(configured_env) or "").strip(), configured_env
+    for name in fallback_env_names:
+        value = (os.getenv(name) or "").strip()
+        if value:
+            return value, name
+    expected = fallback_env_names[0] if fallback_env_names else configured_env or ""
+    return "", expected
+
+
+def _provider_api_key(provider: str, default_env: str, label: str) -> str:
+    """Resolve an API key from ``[tool.agy.providers.<provider>].api_key_env``."""
+    configured = _configured_env_name(provider, "api_key_env")
+    value, env_name = _resolve_env(configured, default_env)
     if not value:
-        raise ValueError(f"Missing environment variable for {provider}: {name}")
+        raise ValueError(f"Missing environment variable for {label}: {env_name}")
     return value
+
+
+def _azure_api_version() -> str:
+    """API version from provider config, ``OPENAI_API_VERSION``, or default."""
+    cfg_version = get_provider_config("openai_azure").get("api_version")
+    if isinstance(cfg_version, str) and cfg_version.strip():
+        return cfg_version.strip()
+    env_version = (os.getenv("OPENAI_API_VERSION") or "").strip()
+    return env_version or _AZURE_API_VERSION
+
+
+def _azure_auth(
+    endpoint_override: str | None,
+) -> tuple[str, str | None, Any | None, str]:
+    """Resolve Azure endpoint + api-key or AAD token provider.
+
+    When the key env is unset/empty, use ``DefaultAzureCredential`` (managed
+    identity on Azure, ``az login`` locally). Requires ``azure-identity``.
+    """
+    key_env = _configured_env_name("openai_azure", "api_key_env")
+    endpoint_env = _configured_env_name("openai_azure", "endpoint_env")
+    api_version = _azure_api_version()
+
+    api_key, key_name = _resolve_env(key_env, *_DEFAULT_AZURE_KEY_ENVS)
+    if endpoint_override and endpoint_override.strip():
+        endpoint = endpoint_override.strip()
+        endpoint_name = "endpoint"
+    else:
+        endpoint, endpoint_name = _resolve_env(
+            endpoint_env, *_DEFAULT_AZURE_ENDPOINT_ENVS
+        )
+
+    if not endpoint:
+        raise ValueError(
+            "Missing environment variable for Azure OpenAI endpoint: "
+            f"{endpoint_name or 'AZURE_OPENAI_ENDPOINT'}"
+        )
+
+    if api_key:
+        return endpoint, api_key, None, api_version
+
+    try:
+        from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+    except ImportError as exc:
+        raise ValueError(
+            "Azure OpenAI API key unset and azure-identity is not installed. "
+            f"Set {key_name or 'AZURE_OPENAI_API_KEY'}, or install "
+            "`pip install 'agy[azure]'` for managed identity / AAD auth."
+        ) from exc
+
+    token_provider = get_bearer_token_provider(
+        DefaultAzureCredential(), _COGNITIVE_SCOPE
+    )
+    return endpoint, None, token_provider, api_version
+
+
+def _azure_sync_client(endpoint: str | None) -> Any:
+    """Cached ``AzureOpenAI`` client (api-key or ``azure_ad_token_provider``)."""
+    from openai import AzureOpenAI
+
+    azure_endpoint, api_key, token_provider, api_version = _azure_auth(endpoint)
+    if api_key is not None:
+
+        def factory(
+            ep: str = azure_endpoint,
+            key: str = api_key,
+            ver: str = api_version,
+        ) -> Any:
+            return AzureOpenAI(azure_endpoint=ep, api_key=key, api_version=ver)
+
+        return _cached_sync_client(
+            ("openai_azure", "key", api_key, azure_endpoint, api_version), factory
+        )
+
+    def mi_factory(
+        ep: str = azure_endpoint,
+        provider: Any = token_provider,
+        ver: str = api_version,
+    ) -> Any:
+        return AzureOpenAI(
+            azure_endpoint=ep,
+            azure_ad_token_provider=provider,
+            api_version=ver,
+        )
+
+    return _cached_sync_client(
+        ("openai_azure", "mi", azure_endpoint, api_version), mi_factory
+    )
+
+
+def _azure_async_client(endpoint: str | None) -> Any:
+    """Cached ``AsyncAzureOpenAI`` client (api-key or ``azure_ad_token_provider``)."""
+    from openai import AsyncAzureOpenAI
+
+    azure_endpoint, api_key, token_provider, api_version = _azure_auth(endpoint)
+    if api_key is not None:
+
+        def factory(
+            ep: str = azure_endpoint,
+            key: str = api_key,
+            ver: str = api_version,
+        ) -> Any:
+            return AsyncAzureOpenAI(azure_endpoint=ep, api_key=key, api_version=ver)
+
+        return _cached_async_client(
+            ("openai_azure", "key", api_key, azure_endpoint, api_version), factory
+        )
+
+    def mi_factory(
+        ep: str = azure_endpoint,
+        provider: Any = token_provider,
+        ver: str = api_version,
+    ) -> Any:
+        return AsyncAzureOpenAI(
+            azure_endpoint=ep,
+            azure_ad_token_provider=provider,
+            api_version=ver,
+        )
+
+    return _cached_async_client(
+        ("openai_azure", "mi", azure_endpoint, api_version), mi_factory
+    )
 
 
 # Provider Callables (Module-Level Functions)
@@ -67,9 +222,10 @@ def openai_llm_call(prompt: str, model: str = "gpt-5-mini", **params) -> str:
     """OpenAI LLM call."""
     from openai import OpenAI
 
-    openai_api_key = _require_env("OPENAI_API_KEY", "OpenAI")
+    openai_api_key = _provider_api_key("openai", "OPENAI_API_KEY", "OpenAI")
     client = _cached_sync_client(
-        ("openai", openai_api_key), lambda: OpenAI(api_key=openai_api_key)
+        ("openai", openai_api_key),
+        lambda key=openai_api_key: OpenAI(api_key=key),
     )
     response = client.chat.completions.create(
         model=model, messages=[{"role": "user", "content": prompt}], **params
@@ -83,9 +239,10 @@ async def openai_llm_call_async(
     """OpenAI LLM call (async)."""
     from openai import AsyncOpenAI
 
-    openai_api_key = _require_env("OPENAI_API_KEY", "OpenAI")
+    openai_api_key = _provider_api_key("openai", "OPENAI_API_KEY", "OpenAI")
     client = _cached_async_client(
-        ("openai", openai_api_key), lambda: AsyncOpenAI(api_key=openai_api_key)
+        ("openai", openai_api_key),
+        lambda key=openai_api_key: AsyncOpenAI(api_key=key),
     )
     response = await client.chat.completions.create(
         model=model, messages=[{"role": "user", "content": prompt}], **params
@@ -93,41 +250,11 @@ async def openai_llm_call_async(
     return _require_text(response.choices[0].message.content, "OpenAI")
 
 
-def _azure_credentials(endpoint: str | None) -> tuple[str, str]:
-    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY") or os.getenv(
-        "OPENAI_API_AZURE_KEY"
-    )
-    azure_endpoint = (
-        endpoint
-        or os.getenv("AZURE_OPENAI_ENDPOINT")
-        or os.getenv("OPENAI_AZURE_BASE_URL")
-    )
-
-    if not azure_api_key or not azure_endpoint:
-        raise ValueError(
-            "Missing environment variables for Azure OpenAI: AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT"
-        )
-    return azure_api_key, azure_endpoint
-
-
-_AZURE_API_VERSION = "2024-02-15-preview"
-
-
 def openai_azure_llm_call(
     prompt: str, model: str = "gpt-4o", endpoint: str | None = None, **params
 ) -> str:
-    """Azure OpenAI LLM call."""
-    from openai import AzureOpenAI
-
-    azure_api_key, azure_endpoint = _azure_credentials(endpoint)
-    client = _cached_sync_client(
-        ("openai_azure", azure_api_key, azure_endpoint),
-        lambda: AzureOpenAI(
-            azure_endpoint=azure_endpoint,
-            api_key=azure_api_key,
-            api_version=_AZURE_API_VERSION,
-        ),
-    )
+    """Azure OpenAI / Azure AI Foundry chat completions (api-key or managed identity)."""
+    client = _azure_sync_client(endpoint)
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}], model=model, **params
     )
@@ -137,18 +264,8 @@ def openai_azure_llm_call(
 async def openai_azure_llm_call_async(
     prompt: str, model: str = "gpt-4o", endpoint: str | None = None, **params
 ) -> str:
-    """Azure OpenAI LLM call (async)."""
-    from openai import AsyncAzureOpenAI
-
-    azure_api_key, azure_endpoint = _azure_credentials(endpoint)
-    client = _cached_async_client(
-        ("openai_azure", azure_api_key, azure_endpoint),
-        lambda: AsyncAzureOpenAI(
-            azure_endpoint=azure_endpoint,
-            api_key=azure_api_key,
-            api_version=_AZURE_API_VERSION,
-        ),
-    )
+    """Azure OpenAI / Azure AI Foundry chat completions (async)."""
+    client = _azure_async_client(endpoint)
     response = await client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}], model=model, **params
     )
@@ -158,9 +275,10 @@ async def openai_azure_llm_call_async(
 def _gemini_client() -> Any:
     from google import genai
 
-    gemini_api_key = _require_env("GEMINI_API_KEY", "Google Gemini")
+    gemini_api_key = _provider_api_key("gemini", "GEMINI_API_KEY", "Google Gemini")
     return _cached_sync_client(
-        ("gemini", gemini_api_key), lambda: genai.Client(api_key=gemini_api_key)
+        ("gemini", gemini_api_key),
+        lambda key=gemini_api_key: genai.Client(api_key=key),
     )
 
 
@@ -204,9 +322,10 @@ def anthropic_llm_call(
     """Anthropic Claude LLM call."""
     from anthropic import Anthropic
 
-    anthropic_api_key = _require_env("ANTHROPIC_API_KEY", "Anthropic")
+    anthropic_api_key = _provider_api_key("anthropic", "ANTHROPIC_API_KEY", "Anthropic")
     client = _cached_sync_client(
-        ("anthropic", anthropic_api_key), lambda: Anthropic(api_key=anthropic_api_key)
+        ("anthropic", anthropic_api_key),
+        lambda key=anthropic_api_key: Anthropic(api_key=key),
     )
     response = client.messages.create(
         model=model,
@@ -223,10 +342,10 @@ async def anthropic_llm_call_async(
     """Anthropic Claude LLM call (async)."""
     from anthropic import AsyncAnthropic
 
-    anthropic_api_key = _require_env("ANTHROPIC_API_KEY", "Anthropic")
+    anthropic_api_key = _provider_api_key("anthropic", "ANTHROPIC_API_KEY", "Anthropic")
     client = _cached_async_client(
         ("anthropic", anthropic_api_key),
-        lambda: AsyncAnthropic(api_key=anthropic_api_key),
+        lambda key=anthropic_api_key: AsyncAnthropic(api_key=key),
     )
     response = await client.messages.create(
         model=model,
