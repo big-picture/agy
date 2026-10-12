@@ -376,17 +376,17 @@ default_provider = "openai"
 default_model = "gpt-5-mini"
 default_params = {}  # Optional: {"temperature": 0.7, "max_tokens": 1000}
 
-[providers.openai]
+[tool.agy.providers.openai]
 api_key_env = "OPENAI_API_KEY"
 
-[providers.openai_azure]
-api_key_env = "AZURE_OPENAI_API_KEY"
+[tool.agy.providers.openai_azure]
+api_key_env = "AZURE_OPENAI_API_KEY"  # omit / leave unset → managed identity
 endpoint_env = "AZURE_OPENAI_ENDPOINT"
 
-[providers.gemini]
+[tool.agy.providers.gemini]
 api_key_env = "GEMINI_API_KEY"
 
-[providers.anthropic]
+[tool.agy.providers.anthropic]
 api_key_env = "ANTHROPIC_API_KEY"
 ```
 

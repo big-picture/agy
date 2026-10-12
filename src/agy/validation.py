@@ -490,10 +490,23 @@ def _extract_providers_from_flow(flow: Flow) -> set[str]:
     return providers
 
 
+def _provider_env_name(provider: str, key: str, default: str) -> str:
+    """Resolve env var name from ``[tool.agy.providers.<provider>]`` or default."""
+    from agy.config import get_provider_config
+
+    raw = get_provider_config(provider).get(key)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return default
+
+
 def _check_llm_env_vars(
     providers_used: set[str] | None = None,
 ) -> list[ValidationIssue]:
     """Check if LLM ENV variables are set for the used providers.
+
+    Honors ``api_key_env`` / ``endpoint_env`` from ``[tool.agy.providers.*]``.
+    For ``openai_azure``, a missing key is only a soft warning (managed identity).
 
     Args:
         providers_used: Set of provider names used in the flow (from set_model calls).
@@ -508,28 +521,67 @@ def _check_llm_env_vars(
         config = load_llm_config()
         providers_used = {config.get("default_provider", "openai")}
 
-    # Provider → (env_var, description)
-    provider_keys = {
-        "openai": [("OPENAI_API_KEY", "OpenAI")],
-        "anthropic": [("ANTHROPIC_API_KEY", "Anthropic")],
-        "google": [("GEMINI_API_KEY", "Google Gemini")],
-        "azure": [
-            ("AZURE_OPENAI_API_KEY", "Azure OpenAI"),
-            ("AZURE_OPENAI_ENDPOINT", "Azure OpenAI endpoint"),
-        ],
-    }
-
     for provider in providers_used:
         provider_lower = provider.lower()
-        if provider_lower not in provider_keys:
-            continue
 
-        for env_var, description in provider_keys[provider_lower]:
+        if provider_lower == "openai":
+            env_var = _provider_env_name("openai", "api_key_env", "OPENAI_API_KEY")
             if not os.getenv(env_var):
                 issues.append(
                     ValidationIssue(
                         level="warning",
-                        message=f"{env_var} not set (required for {description})",
+                        message=f"{env_var} not set (required for OpenAI)",
+                        location="environment",
+                    )
+                )
+        elif provider_lower == "anthropic":
+            env_var = _provider_env_name(
+                "anthropic", "api_key_env", "ANTHROPIC_API_KEY"
+            )
+            if not os.getenv(env_var):
+                issues.append(
+                    ValidationIssue(
+                        level="warning",
+                        message=f"{env_var} not set (required for Anthropic)",
+                        location="environment",
+                    )
+                )
+        elif provider_lower in {"gemini", "google"}:
+            env_var = _provider_env_name("gemini", "api_key_env", "GEMINI_API_KEY")
+            if not os.getenv(env_var):
+                issues.append(
+                    ValidationIssue(
+                        level="warning",
+                        message=f"{env_var} not set (required for Google Gemini)",
+                        location="environment",
+                    )
+                )
+        elif provider_lower in {"openai_azure", "azure"}:
+            endpoint_var = _provider_env_name(
+                "openai_azure", "endpoint_env", "AZURE_OPENAI_ENDPOINT"
+            )
+            key_var = _provider_env_name(
+                "openai_azure", "api_key_env", "AZURE_OPENAI_API_KEY"
+            )
+            if not os.getenv(endpoint_var):
+                issues.append(
+                    ValidationIssue(
+                        level="warning",
+                        message=(
+                            f"{endpoint_var} not set "
+                            "(required for Azure OpenAI endpoint)"
+                        ),
+                        location="environment",
+                    )
+                )
+            if not os.getenv(key_var):
+                issues.append(
+                    ValidationIssue(
+                        level="warning",
+                        message=(
+                            f"{key_var} not set "
+                            "(openai_azure will use Azure AD / managed identity)"
+                        ),
                         location="environment",
                     )
                 )

@@ -112,9 +112,10 @@ def get_package_root() -> Path:
 
 
 def reset_cache() -> None:
-    """Reset the project root cache (useful for testing)."""
-    global _project_root_cache
+    """Reset project-root and LLM config caches (useful for testing)."""
+    global _project_root_cache, _llm_config_cache
     _project_root_cache = None
+    _llm_config_cache = None
 
 
 def get_flowsy_grammar_path() -> Path:
@@ -122,14 +123,38 @@ def get_flowsy_grammar_path() -> Path:
     return FLOWSY_GRAMMAR_PATH
 
 
+def _load_providers_section(pyproject: Path) -> dict:
+    """Load provider tables from pyproject.toml.
+
+    Preferred: ``[tool.agy.providers.<name>]``.
+    Fallback: top-level ``[providers.<name>]`` (legacy templates).
+    """
+    preferred = _read_pyproject_section(pyproject, ["tool", "agy", "providers"])
+    if isinstance(preferred, dict) and preferred:
+        return preferred
+    legacy = _read_pyproject_section(pyproject, ["providers"])
+    return legacy if isinstance(legacy, dict) else {}
+
+
+def get_provider_config(provider: str) -> dict:
+    """Return ``[tool.agy.providers.<provider>]`` settings (empty dict if unset)."""
+    providers = load_llm_config().get("providers") or {}
+    cfg = providers.get(provider) if isinstance(providers, dict) else None
+    return dict(cfg) if isinstance(cfg, dict) else {}
+
+
 def load_llm_config() -> dict:
     """
     Load LLM configuration from user's pyproject.toml.
+
+    Reads ``[tool.agy.llm]`` for defaults and ``[tool.agy.providers.*]`` (or
+    legacy top-level ``[providers.*]``) for per-provider env wiring.
 
     Fallback if not present:
       default_provider = "openai"
       default_model = "gpt-5-mini"
       default_params = {}
+      providers = {}
     """
     global _llm_config_cache
     if _llm_config_cache is not None:
@@ -138,19 +163,25 @@ def load_llm_config() -> dict:
     project_root = get_project_root()
     pyproject = project_root / "pyproject.toml"
 
-    defaults = {
+    defaults: dict = {
         "default_provider": "openai",
         "default_model": "gpt-5-mini",
         "default_params": {},
         "providers": {},
     }
 
+    providers: dict = {}
     if pyproject.exists():
+        providers = _load_providers_section(pyproject)
         section = _read_pyproject_section(pyproject, ["tool", "agy", "llm"])
         if isinstance(section, dict):
             merged = defaults | {k: v for k, v in section.items() if v is not None}
+            # Nested providers under [tool.agy.llm] must not shadow dedicated tables.
+            merged["providers"] = providers
             _llm_config_cache = merged
             return merged
 
-    _llm_config_cache = defaults
-    return defaults
+    result = dict(defaults)
+    result["providers"] = providers
+    _llm_config_cache = result
+    return result
