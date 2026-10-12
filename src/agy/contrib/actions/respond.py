@@ -51,8 +51,10 @@ def respond(
             augmentation=augmentation_text,
         )
 
+        from agy.contrib.llm_call import invoke_model_call
+
         _agy_logger.debug(f"Generate() prompt:\n{prompt}")
-        result = call_func(prompt)
+        result = invoke_model_call(call_func, prompt, name="respond")
         _agy_logger.debug(f"Generate() model response:\n{result}")
 
         result_clean = result.strip()
