@@ -7,8 +7,10 @@ import types
 
 import pytest
 
+from agy.config import reset_cache
 from agy.contrib.llm_call import (
     anthropic_llm_call,
+    clear_provider_clients,
     fake_llm_call,
     gemini_llm_call,
     openai_azure_llm_call,
@@ -83,26 +85,15 @@ def test_openai_provider_missing_key_raises(monkeypatch: pytest.MonkeyPatch) -> 
         openai_llm_call(TEST_PROMPT)
 
 
-def test_azure_provider_uses_mocked_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Test that azure provider uses mocked sdk.
-
-    Args:
-        monkeypatch: monkeypatch.
-    """
-    calls: dict[str, object] = {}
+def _mock_azure_openai(calls: dict[str, object]):
+    """Build a fake AzureOpenAI class that records constructor kwargs."""
 
     class _Completions:
-        """Represents completions API mock behavior."""
+        """Completions API mock."""
 
         @staticmethod
         def create(*, messages, model, **params):
-            """Create.
-
-            Args:
-                messages: messages.
-                model: model.
-                **params: Additional keyword arguments.
-            """
+            """Record chat.completions.create args and return fixed text."""
             calls["messages"] = messages
             calls["model"] = model
             calls["params"] = params
@@ -115,30 +106,123 @@ def test_azure_provider_uses_mocked_sdk(monkeypatch: pytest.MonkeyPatch) -> None
             )
 
     class _AzureOpenAI:
-        """Represents a AzureOpenAI object."""
+        """AzureOpenAI constructor mock (api-key or token provider)."""
 
-        def __init__(self, azure_endpoint, api_key, api_version):
-            """Initialize the object.
-
-            Args:
-                azure_endpoint: azure endpoint.
-                api_key: api key.
-                api_version: api version.
-            """
-            calls["azure_endpoint"] = azure_endpoint
-            calls["api_key"] = api_key
-            calls["api_version"] = api_version
+        def __init__(self, **kwargs):
+            """Record AzureOpenAI kwargs used by the provider."""
+            calls.update(kwargs)
             self.chat = types.SimpleNamespace(completions=_Completions())
+
+    return _AzureOpenAI
+
+
+def test_azure_provider_uses_mocked_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Azure provider uses api-key + endpoint from default env names."""
+    calls: dict[str, object] = {}
+    clear_provider_clients()
+    reset_cache()
 
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
     monkeypatch.setitem(
-        sys.modules, "openai", types.SimpleNamespace(AzureOpenAI=_AzureOpenAI)
+        sys.modules,
+        "openai",
+        types.SimpleNamespace(AzureOpenAI=_mock_azure_openai(calls)),
     )
 
     result = openai_azure_llm_call(TEST_PROMPT, model="gpt-4o")
     assert result == "Hello Azure"
     assert calls["api_key"] == "azure-key"
+    assert calls["azure_endpoint"] == "https://example.openai.azure.com"
+
+
+def test_azure_provider_honors_provider_env_names(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Azure provider reads api_key_env / endpoint_env from tool.agy.providers."""
+    calls: dict[str, object] = {}
+    clear_provider_clients()
+    reset_cache()
+
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[tool.agy.llm]
+default_provider = "openai_azure"
+
+[tool.agy.providers.openai_azure]
+api_key_env = "AZURE_AI_SERVICES_KEY"
+endpoint_env = "AZURE_AI_SERVICES_OPENAI_ENDPOINT"
+api_version = "2024-12-01-preview"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+    monkeypatch.setenv("AZURE_AI_SERVICES_KEY", "foundry-key")
+    monkeypatch.setenv(
+        "AZURE_AI_SERVICES_OPENAI_ENDPOINT", "https://foundry.example.openai.azure.com"
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        types.SimpleNamespace(AzureOpenAI=_mock_azure_openai(calls)),
+    )
+
+    result = openai_azure_llm_call(TEST_PROMPT, model="gpt-4o")
+    assert result == "Hello Azure"
+    assert calls["api_key"] == "foundry-key"
+    assert calls["azure_endpoint"] == "https://foundry.example.openai.azure.com"
+    assert calls["api_version"] == "2024-12-01-preview"
+
+
+def test_azure_provider_uses_managed_identity_without_key(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When key env empty, Azure provider uses azure_ad_token_provider."""
+    calls: dict[str, object] = {}
+    clear_provider_clients()
+    reset_cache()
+
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[tool.agy.providers.openai_azure]
+api_key_env = "AZURE_AI_SERVICES_KEY"
+endpoint_env = "AZURE_AI_SERVICES_OPENAI_ENDPOINT"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AZURE_AI_SERVICES_KEY", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv(
+        "AZURE_AI_SERVICES_OPENAI_ENDPOINT", "https://foundry.example.openai.azure.com"
+    )
+
+    token_provider = object()
+
+    def _fake_get_bearer_token_provider(credential, scope):  # noqa: ARG001
+        """Return a sentinel token provider for MI path."""
+        return token_provider
+
+    identity_mod = types.ModuleType("azure.identity")
+    setattr(identity_mod, "DefaultAzureCredential", lambda *a, **k: object())
+    setattr(identity_mod, "get_bearer_token_provider", _fake_get_bearer_token_provider)
+    azure_mod = types.ModuleType("azure")
+    setattr(azure_mod, "identity", identity_mod)
+    monkeypatch.setitem(sys.modules, "azure", azure_mod)
+    monkeypatch.setitem(sys.modules, "azure.identity", identity_mod)
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        types.SimpleNamespace(AzureOpenAI=_mock_azure_openai(calls)),
+    )
+
+    result = openai_azure_llm_call(TEST_PROMPT, model="gpt-4o")
+    assert result == "Hello Azure"
+    assert "api_key" not in calls
+    assert calls["azure_ad_token_provider"] is token_provider
+    assert calls["azure_endpoint"] == "https://foundry.example.openai.azure.com"
 
 
 def test_gemini_provider_uses_mocked_sdk(monkeypatch: pytest.MonkeyPatch) -> None:

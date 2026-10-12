@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-12
+
+### Added
+
+- `load_llm_config()` now loads `[tool.agy.providers.<name>]` (preferred) or
+  legacy top-level `[providers.<name>]`, exposing them as `providers` on the
+  config dict. New helper `get_provider_config(name)`.
+- `openai_azure` supports Azure AD / managed identity when the configured API
+  key env is unset: builds `AzureOpenAI` /
+  `AsyncAzureOpenAI` with `azure_ad_token_provider` via `DefaultAzureCredential`
+  (optional extra `agy[azure]` → `azure-identity`).
+- Optional provider setting `api_version` (and env `OPENAI_API_VERSION`) for
+  Azure OpenAI clients.
+- `clear_provider_clients()` to drop cached SDK clients (tests / credential
+  rotation).
+- `reset_cache()` also clears the LLM config cache.
+
+### Fixed
+
+- Provider callables honor `api_key_env` / `endpoint_env` from
+  `[tool.agy.providers.*]` (docs/templates claimed this; runtime ignored it).
+- Flow validation `_check_llm_env_vars` checks `openai_azure` / `gemini` by
+  their real provider names and uses configured env var names. Missing Azure
+  key warns that managed identity will be used; endpoint remains required.
+
+### Changed
+
+- Example / template `pyproject.toml` provider tables use
+  `[tool.agy.providers.<name>]` instead of top-level `[providers.<name>]`.
+
 ## [1.2.0] - 2026-09-30
 
 ### Fixed
