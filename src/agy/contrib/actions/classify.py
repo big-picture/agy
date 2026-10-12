@@ -61,8 +61,10 @@ def classify(
             input_text=input_text,
         )
 
+        from agy.contrib.llm_call import invoke_model_call
+
         _agy_logger.debug(f"Classify prompt:\n{prompt}")
-        result = call_func(prompt)
+        result = invoke_model_call(call_func, prompt, name="classify")
         _agy_logger.debug(f"Classify model response:\n{result}")
 
         result_clean = result.strip()

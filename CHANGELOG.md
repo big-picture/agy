@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-12
+
+### Added
+
+- Stable `seed` for `openai` / `openai_azure` chat completions (derived from
+  prompt or message text; image payloads excluded from the hash basis).
+- Optional Langfuse generation `name` and `metadata` on openai /
+  openai_azure completions when Langfuse tracing is enabled; metadata defaults
+  include `agy_flow` when a flow is active.
+- Multimodal chat APIs: `openai_chat_completion[_result][_async]`,
+  `openai_azure_chat_completion[_result][_async]`, and
+  `LLMCall.chat_completion` / `achat_completion` (+ `*_result` variants)
+  accepting OpenAI-style message lists (text + image parts).
+- `ChatCompletionResult` (`text` + `usage`) for callers that need token usage.
+- `classify` / `extract` / `respond` pass generation names into the model call
+  helper for clearer Langfuse traces.
+
 ## [1.3.0] - 2026-10-12
 
 ### Added
