@@ -39,6 +39,35 @@ def clear_provider_clients() -> None:
     _async_clients.clear()
 
 
+def langfuse_tracing_enabled() -> bool:
+    """True when Langfuse public+secret keys are set (opt-in generation tracing)."""
+    return bool(
+        (os.getenv("LANGFUSE_SECRET_KEY") or "").strip()
+        and (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip()
+    )
+
+
+def _openai_sdk():
+    """Return ``openai`` or ``langfuse.openai`` (same client classes, traced create)."""
+    if not langfuse_tracing_enabled():
+        import openai
+
+        return openai
+    try:
+        import langfuse.openai as traced_openai
+    except ImportError as exc:
+        raise ValueError(
+            "LANGFUSE_SECRET_KEY and LANGFUSE_PUBLIC_KEY are set but langfuse is "
+            "not installed. Install with `pip install 'agy[langfuse]'`."
+        ) from exc
+    return traced_openai
+
+
+def _langfuse_cache_tag() -> str:
+    """Cache-key segment so traced vs plain clients are not shared."""
+    return "langfuse" if langfuse_tracing_enabled() else "plain"
+
+
 def _cached_sync_client(cache_key: tuple[str, ...], factory: Callable[[], Any]) -> Any:
     client = _sync_clients.get(cache_key)
     if client is None:
@@ -151,9 +180,10 @@ def _azure_auth(
 
 def _azure_sync_client(endpoint: str | None) -> Any:
     """Cached ``AzureOpenAI`` client (api-key or ``azure_ad_token_provider``)."""
-    from openai import AzureOpenAI
+    azure_openai_cls = _openai_sdk().AzureOpenAI
 
     azure_endpoint, api_key, token_provider, api_version = _azure_auth(endpoint)
+    tag = _langfuse_cache_tag()
     if api_key is not None:
 
         def factory(
@@ -161,10 +191,10 @@ def _azure_sync_client(endpoint: str | None) -> Any:
             key: str = api_key,
             ver: str = api_version,
         ) -> Any:
-            return AzureOpenAI(azure_endpoint=ep, api_key=key, api_version=ver)
+            return azure_openai_cls(azure_endpoint=ep, api_key=key, api_version=ver)
 
         return _cached_sync_client(
-            ("openai_azure", "key", api_key, azure_endpoint, api_version), factory
+            ("openai_azure", tag, "key", api_key, azure_endpoint, api_version), factory
         )
 
     def mi_factory(
@@ -172,22 +202,23 @@ def _azure_sync_client(endpoint: str | None) -> Any:
         provider: Any = token_provider,
         ver: str = api_version,
     ) -> Any:
-        return AzureOpenAI(
+        return azure_openai_cls(
             azure_endpoint=ep,
             azure_ad_token_provider=provider,
             api_version=ver,
         )
 
     return _cached_sync_client(
-        ("openai_azure", "mi", azure_endpoint, api_version), mi_factory
+        ("openai_azure", tag, "mi", azure_endpoint, api_version), mi_factory
     )
 
 
 def _azure_async_client(endpoint: str | None) -> Any:
     """Cached ``AsyncAzureOpenAI`` client (api-key or ``azure_ad_token_provider``)."""
-    from openai import AsyncAzureOpenAI
+    async_azure_openai_cls = _openai_sdk().AsyncAzureOpenAI
 
     azure_endpoint, api_key, token_provider, api_version = _azure_auth(endpoint)
+    tag = _langfuse_cache_tag()
     if api_key is not None:
 
         def factory(
@@ -195,10 +226,12 @@ def _azure_async_client(endpoint: str | None) -> Any:
             key: str = api_key,
             ver: str = api_version,
         ) -> Any:
-            return AsyncAzureOpenAI(azure_endpoint=ep, api_key=key, api_version=ver)
+            return async_azure_openai_cls(
+                azure_endpoint=ep, api_key=key, api_version=ver
+            )
 
         return _cached_async_client(
-            ("openai_azure", "key", api_key, azure_endpoint, api_version), factory
+            ("openai_azure", tag, "key", api_key, azure_endpoint, api_version), factory
         )
 
     def mi_factory(
@@ -206,26 +239,26 @@ def _azure_async_client(endpoint: str | None) -> Any:
         provider: Any = token_provider,
         ver: str = api_version,
     ) -> Any:
-        return AsyncAzureOpenAI(
+        return async_azure_openai_cls(
             azure_endpoint=ep,
             azure_ad_token_provider=provider,
             api_version=ver,
         )
 
     return _cached_async_client(
-        ("openai_azure", "mi", azure_endpoint, api_version), mi_factory
+        ("openai_azure", tag, "mi", azure_endpoint, api_version), mi_factory
     )
 
 
 # Provider Callables (Module-Level Functions)
 def openai_llm_call(prompt: str, model: str = "gpt-5-mini", **params) -> str:
-    """OpenAI LLM call."""
-    from openai import OpenAI
+    """OpenAI LLM call (Langfuse-traced when ``LANGFUSE_*`` keys are set)."""
+    openai_cls = _openai_sdk().OpenAI
 
     openai_api_key = _provider_api_key("openai", "OPENAI_API_KEY", "OpenAI")
     client = _cached_sync_client(
-        ("openai", openai_api_key),
-        lambda key=openai_api_key: OpenAI(api_key=key),
+        ("openai", _langfuse_cache_tag(), openai_api_key),
+        lambda key=openai_api_key: openai_cls(api_key=key),
     )
     response = client.chat.completions.create(
         model=model, messages=[{"role": "user", "content": prompt}], **params
@@ -236,13 +269,13 @@ def openai_llm_call(prompt: str, model: str = "gpt-5-mini", **params) -> str:
 async def openai_llm_call_async(
     prompt: str, model: str = "gpt-5-mini", **params
 ) -> str:
-    """OpenAI LLM call (async)."""
-    from openai import AsyncOpenAI
+    """OpenAI LLM call (async; Langfuse-traced when ``LANGFUSE_*`` keys are set)."""
+    async_openai_cls = _openai_sdk().AsyncOpenAI
 
     openai_api_key = _provider_api_key("openai", "OPENAI_API_KEY", "OpenAI")
     client = _cached_async_client(
-        ("openai", openai_api_key),
-        lambda key=openai_api_key: AsyncOpenAI(api_key=key),
+        ("openai", _langfuse_cache_tag(), openai_api_key),
+        lambda key=openai_api_key: async_openai_cls(api_key=key),
     )
     response = await client.chat.completions.create(
         model=model, messages=[{"role": "user", "content": prompt}], **params
@@ -253,7 +286,7 @@ async def openai_llm_call_async(
 def openai_azure_llm_call(
     prompt: str, model: str = "gpt-4o", endpoint: str | None = None, **params
 ) -> str:
-    """Azure OpenAI / Azure AI Foundry chat completions (api-key or managed identity)."""
+    """Azure OpenAI / Foundry completions (api-key or MI; Langfuse when keys set)."""
     client = _azure_sync_client(endpoint)
     response = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}], model=model, **params
@@ -264,7 +297,7 @@ def openai_azure_llm_call(
 async def openai_azure_llm_call_async(
     prompt: str, model: str = "gpt-4o", endpoint: str | None = None, **params
 ) -> str:
-    """Azure OpenAI / Azure AI Foundry chat completions (async)."""
+    """Azure OpenAI / Foundry completions async (Langfuse when keys set)."""
     client = _azure_async_client(endpoint)
     response = await client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}], model=model, **params
