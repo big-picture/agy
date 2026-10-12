@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flows). Structured actions (``classify`` / ``extract``) still merge
   ``return["context"]`` side fields; ``__exec__`` complex assignments no longer
   reset ``context["result"]`` to ``None``.
+- Chat completion result helpers tolerate SDK responses without a ``usage``
+  attribute (tests / thin mocks); Ruff UP037 annotations on ``LLMCall``.
 
 ## [1.3.1] - 2026-10-12
 
