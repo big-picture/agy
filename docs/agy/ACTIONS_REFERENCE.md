@@ -55,8 +55,10 @@ All LLM actions (`classify`, `respond`, `extract`) share common behavior:
 
 *Return Structure:*
 
-- Main result is assigned to the output variable (or `context["result"]` if no
-  assignment)
+- Main result is assigned to the output variable; `context["result"]` is updated
+  only when the action assigns to `result` (bare expressions default to
+  `result`). Named outputs such as `category = classify(...)` do not overwrite a
+  prior `result` in the same node.
 - `confidence` (0.0-1.0) is always written to `context["confidence"]`
 - This allows direct access to confidence in edges:
   `- confidence < 0.7: manual_review`

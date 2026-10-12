@@ -84,6 +84,22 @@ class ActionExecutor:
     - Object methods: Gets object from context and calls method directly
     """
 
+    @staticmethod
+    def _write_action_output(
+        context: dict[str, Any], output: str | None, value: Any
+    ) -> None:
+        """Write an action's primary value to its declared output variable.
+
+        ``context["result"]`` is updated only when the flow action assigns to
+        ``result`` (``output == "result"``). Named outputs such as
+        ``dispatch_ok = helper(...)`` must not clobber a prior ``result = ...``
+        in the same node — see multi-action dispatch patterns in consumer flows.
+        """
+        if output:
+            context[output] = value
+        if output == "result":
+            context["result"] = value
+
     def __init__(self, registry: ActionRegistry):
         """Initialize the action executor.
 
@@ -164,7 +180,6 @@ class ActionExecutor:
                     # Set success (assignments don't return results)
                     context["success"] = True
                     context["error_msg"] = ""
-                    context["result"] = None
 
                     # Logging
                     _agy_logger.info(f"SUCCESS: {assignment_str}")
@@ -205,9 +220,9 @@ class ActionExecutor:
                     ):
                         # Neues Format: {"result": ..., "context": {...}}
                         if "result" in result:
-                            if action_call.output:
-                                context[action_call.output] = result["result"]
-                            context["result"] = result["result"]
+                            self._write_action_output(
+                                context, action_call.output, result["result"]
+                            )
 
                         # context.update() nur wenn "context" vorhanden
                         if "context" in result:
@@ -221,9 +236,7 @@ class ActionExecutor:
                             raise FlowTerminationError(result.get("context", {}))
                     else:
                         # Normales Ergebnis (kein Dict oder kein "context"/"flow_control" Key)
-                        if action_call.output:
-                            context[action_call.output] = result
-                        context["result"] = result
+                        self._write_action_output(context, action_call.output, result)
 
                     # Logging
                     output_str = (
