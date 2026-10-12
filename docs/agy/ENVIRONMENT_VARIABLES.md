@@ -37,6 +37,20 @@ set, AGY uses Azure AD via `DefaultAzureCredential` (`azure_ad_token_provider`).
 Install `agy[azure]` (`azure-identity`) for that path. On Azure (Container Apps
 Jobs, VMs with MI) no key secret is required; locally `az login` works.
 
+### Langfuse (optional)
+
+When both are set, `openai` / `openai_azure` clients are constructed from
+`langfuse.openai` so generations are traced (same auth as without Langfuse,
+including Azure MI):
+
+- `LANGFUSE_SECRET_KEY`
+- `LANGFUSE_PUBLIC_KEY`
+- `LANGFUSE_BASE_URL` (optional; read by the Langfuse SDK)
+
+Install `agy[langfuse]`. Extra Langfuse create kwargs (`name`, `metadata`,
+`trace_id`, …) may be passed through `model_call(..., **params)` when supported
+by the Langfuse OpenAI wrapper.
+
 If a required key/endpoint is missing, AGY raises a runtime error when that
 provider is used.
 

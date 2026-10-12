@@ -13,6 +13,7 @@ from agy.contrib.llm_call import (
     clear_provider_clients,
     fake_llm_call,
     gemini_llm_call,
+    langfuse_tracing_enabled,
     openai_azure_llm_call,
     openai_llm_call,
 )
@@ -223,6 +224,81 @@ endpoint_env = "AZURE_AI_SERVICES_OPENAI_ENDPOINT"
     assert "api_key" not in calls
     assert calls["azure_ad_token_provider"] is token_provider
     assert calls["azure_endpoint"] == "https://foundry.example.openai.azure.com"
+
+
+def test_langfuse_tracing_enabled_requires_both_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Langfuse tracing needs both secret and public keys."""
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    assert langfuse_tracing_enabled() is False
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk")
+    assert langfuse_tracing_enabled() is False
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk")
+    assert langfuse_tracing_enabled() is True
+
+
+def test_azure_provider_uses_langfuse_openai_when_keys_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With LANGFUSE_* set, Azure client is built from langfuse.openai."""
+    calls: dict[str, object] = {}
+    clear_provider_clients()
+    reset_cache()
+
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+
+    langfuse_openai = types.ModuleType("langfuse.openai")
+    setattr(langfuse_openai, "AzureOpenAI", _mock_azure_openai(calls))
+    setattr(langfuse_openai, "AsyncAzureOpenAI", _mock_azure_openai(calls))
+    setattr(langfuse_openai, "OpenAI", object)
+    setattr(langfuse_openai, "AsyncOpenAI", object)
+    langfuse_mod = types.ModuleType("langfuse")
+    setattr(langfuse_mod, "openai", langfuse_openai)
+    monkeypatch.setitem(sys.modules, "langfuse", langfuse_mod)
+    monkeypatch.setitem(sys.modules, "langfuse.openai", langfuse_openai)
+
+    # Stock openai must not be used when Langfuse is enabled.
+    def _boom(**_kwargs):
+        raise AssertionError("stock openai.AzureOpenAI should not be constructed")
+
+    monkeypatch.setitem(
+        sys.modules, "openai", types.SimpleNamespace(AzureOpenAI=_boom)
+    )
+
+    result = openai_azure_llm_call(TEST_PROMPT, model="gpt-4o")
+    assert result == "Hello Azure"
+    assert calls["api_key"] == "azure-key"
+
+
+def test_langfuse_enabled_without_package_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing langfuse package with keys set raises a clear install hint."""
+    clear_provider_clients()
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-key")
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+    monkeypatch.setitem(sys.modules, "langfuse", None)
+    monkeypatch.setitem(sys.modules, "langfuse.openai", None)
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _import(name, *args, **kwargs):
+        if name.startswith("langfuse"):
+            raise ImportError("No module named langfuse")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _import)
+    with pytest.raises(ValueError, match="agy\\[langfuse\\]"):
+        openai_azure_llm_call(TEST_PROMPT)
 
 
 def test_gemini_provider_uses_mocked_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
