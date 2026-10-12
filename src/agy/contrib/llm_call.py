@@ -155,7 +155,7 @@ def invoke_model_call(
 # Provider clients are cached so repeated calls reuse pooled connections instead
 # of paying a fresh TLS handshake per prompt.
 _sync_clients: dict[tuple[str, ...], Any] = {}
-_async_clients: "weakref.WeakKeyDictionary[Any, dict[tuple[str, ...], Any]]" = (
+_async_clients: weakref.WeakKeyDictionary[Any, dict[tuple[str, ...], Any]] = (
     weakref.WeakKeyDictionary()
 )
 
@@ -396,7 +396,9 @@ def openai_chat_completion_result(
     )
     response = client.chat.completions.create(**create_kw)
     text = _require_text(response.choices[0].message.content, "OpenAI")
-    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
+    return ChatCompletionResult(
+        text=text, usage=_usage_from_response(getattr(response, "usage", None))
+    )
 
 
 def openai_chat_completion(
@@ -427,7 +429,9 @@ async def openai_chat_completion_result_async(
     )
     response = await client.chat.completions.create(**create_kw)
     text = _require_text(response.choices[0].message.content, "OpenAI")
-    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
+    return ChatCompletionResult(
+        text=text, usage=_usage_from_response(getattr(response, "usage", None))
+    )
 
 
 def openai_llm_call(prompt: str, model: str = "gpt-5-mini", **params) -> str:
@@ -467,7 +471,9 @@ def openai_azure_chat_completion_result(
     )
     response = client.chat.completions.create(**create_kw)
     text = _require_text(response.choices[0].message.content, "Azure OpenAI")
-    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
+    return ChatCompletionResult(
+        text=text, usage=_usage_from_response(getattr(response, "usage", None))
+    )
 
 
 def openai_azure_chat_completion(
@@ -497,7 +503,9 @@ async def openai_azure_chat_completion_result_async(
     )
     response = await client.chat.completions.create(**create_kw)
     text = _require_text(response.choices[0].message.content, "Azure OpenAI")
-    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
+    return ChatCompletionResult(
+        text=text, usage=_usage_from_response(getattr(response, "usage", None))
+    )
 
 
 def openai_azure_llm_call(
@@ -631,14 +639,14 @@ class LLMCall:
     Each thread can have its own model_call (thread-local storage planned for later).
     """
 
-    _instance: "LLMCall | None" = None
+    _instance: LLMCall | None = None
     _initialized = False
 
-    def __new__(cls) -> "LLMCall":
+    def __new__(cls) -> LLMCall:
         """New.
 
         Returns:
-            'LLMCall': Operation result.
+            LLMCall: Operation result.
         """
         if cls._instance is None:
             cls._instance = super().__new__(cls)

@@ -68,6 +68,67 @@ async def test_executor_execute_registered_function():
     assert context["sum"] == 8
     assert context["success"] is True
     assert context["error_msg"] == ""
+    assert "result" not in context
+
+
+@pytest.mark.asyncio
+async def test_executor_named_output_does_not_clobber_result_slot():
+    """Later named outputs in the same node must not overwrite context['result']."""
+
+    def identity(value: Any) -> Any:
+        return value
+
+    def flag() -> bool:
+        return True
+
+    registry = ActionRegistry()
+    registry.register(
+        ActionType(
+            object_name="global_function",
+            method_name="identity",
+            callable=identity,
+        )
+    )
+    registry.register(
+        ActionType(
+            object_name="global_function",
+            method_name="flag",
+            callable=flag,
+        )
+    )
+    executor = ActionExecutor(registry)
+
+    context: dict[str, Any] = {}
+    await executor.execute(parse_action_with_ast('result = identity({"phase": "done"})'), context)
+    await executor.execute(parse_action_with_ast("dispatch_ok = flag()"), context)
+
+    assert context["result"] == {"phase": "done"}
+    assert context["dispatch_ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_executor_structured_named_output_merges_context_without_clobbering_result():
+    """Structured actions (classify/extract style) merge side fields only into named output."""
+
+    def classify() -> dict[str, Any]:
+        return {"result": "sales", "context": {"confidence": 0.91}}
+
+    registry = ActionRegistry()
+    registry.register(
+        ActionType(
+            object_name="global_function",
+            method_name="classify",
+            callable=classify,
+        )
+    )
+    executor = ActionExecutor(registry)
+
+    context: dict[str, Any] = {"result": {"phase": "start"}}
+    await executor.execute(parse_action_with_ast("category = classify()"), context)
+
+    assert context["result"] == {"phase": "start"}
+    assert context["category"] == "sales"
+    assert context["confidence"] == 0.91
 
 
 @pytest.mark.asyncio
@@ -174,7 +235,7 @@ async def test_executor_execute_complex_assignment_attribute():
 
     assert context["invoice"].invoice_number == "INV-001"
     assert context["success"] is True
-    assert context["result"] is None  # Complex assignments don't set result
+    assert "result" not in context  # __exec__ must not clobber the result scratch slot
 
     # Test another attribute assignment
     action_call2 = parse_action_with_ast('invoice.amount = invoice_data["amount"]')
