@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   key env is unset: builds `AzureOpenAI` /
   `AsyncAzureOpenAI` with `azure_ad_token_provider` via `DefaultAzureCredential`
   (optional extra `agy[azure]` → `azure-identity`).
+- Opt-in Langfuse generation tracing for `openai` and `openai_azure` when
+  `LANGFUSE_SECRET_KEY` and `LANGFUSE_PUBLIC_KEY` are set: clients are built
+  via `langfuse.openai` (same Azure MI path). Optional extra
+  `agy[langfuse]` → `langfuse`. Helper `langfuse_tracing_enabled()`.
 - Optional provider setting `api_version` (and env `OPENAI_API_VERSION`) for
   Azure OpenAI clients.
 - `clear_provider_clients()` to drop cached SDK clients (tests / credential
