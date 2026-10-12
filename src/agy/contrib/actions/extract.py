@@ -172,12 +172,16 @@ def extract(
 
         call_func = model_call if model_call else LLMCall().model_call
 
+        from agy.contrib.llm_call import invoke_model_call
+
         prompt = _build_extract_prompt(
             input_text, values_to_extract, instruction, instruction_file, augmentation
         )
         _agy_logger.debug(f"Extract prompt:\n{prompt}")
 
-        return _parse_extract_response(call_func(prompt), values_to_extract)
+        return _parse_extract_response(
+            invoke_model_call(call_func, prompt, name="extract"), values_to_extract
+        )
     except Exception as exc:  # pylint: disable=broad-except
         _agy_logger.error(f"Extract failed: {exc}")
         raise
@@ -201,12 +205,18 @@ async def extract_async(
 
         call_func = model_call if model_call else LLMCall().amodel_call
 
+        from agy.contrib.llm_call import invoke_model_call
+
         prompt = _build_extract_prompt(
             input_text, values_to_extract, instruction, instruction_file, augmentation
         )
         _agy_logger.debug(f"Extract prompt:\n{prompt}")
 
-        result = call_func(prompt)
+        # Prefer kwargs (name=extract); fall back for sync-only callables.
+        try:
+            result = call_func(prompt, name="extract")
+        except TypeError:
+            result = invoke_model_call(call_func, prompt, name="extract")
         if inspect.isawaitable(result):
             result = await result
 

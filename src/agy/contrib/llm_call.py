@@ -1,11 +1,16 @@
 # agy/contrib/llm_call.py
 """LLM Call Singleton - Central management for all LLM provider calls."""
 
+from __future__ import annotations
+
 import asyncio
+import hashlib
 import inspect
+import json
 import os
 import weakref
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from agy.config import get_provider_config, load_llm_config
@@ -16,6 +21,14 @@ _DEFAULT_AZURE_KEY_ENVS = ("AZURE_OPENAI_API_KEY", "OPENAI_API_AZURE_KEY")
 _DEFAULT_AZURE_ENDPOINT_ENVS = ("AZURE_OPENAI_ENDPOINT", "OPENAI_AZURE_BASE_URL")
 
 
+@dataclass(frozen=True)
+class ChatCompletionResult:
+    """Text completion plus optional token usage (for callers that need both)."""
+
+    text: str
+    usage: dict[str, Any] = field(default_factory=dict)
+
+
 def _require_text(value: Any, provider: str) -> str:
     """Normalize provider response text to a guaranteed string."""
     if isinstance(value, str):
@@ -23,6 +36,120 @@ def _require_text(value: Any, provider: str) -> str:
     if value is None:
         raise ValueError(f"{provider} returned empty response text")
     return str(value)
+
+
+def _flow_label() -> str:
+    """Best-effort AGY flow name from ``current_flow_var`` (empty outside a flow)."""
+    try:
+        from agy.flow_executor import current_flow_var
+
+        flow = current_flow_var.get()
+        return (getattr(flow, "name", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _stable_openai_seed(basis: str) -> int:
+    """32-bit positive int from UTF-8 text; stable across processes."""
+    return int.from_bytes(hashlib.sha256(basis.encode("utf-8")).digest()[:4], "big")
+
+
+def _seed_basis_from_messages(messages: list[dict[str, Any]]) -> str:
+    """Stable seed basis from chat messages (text parts only; skip image payloads)."""
+    parts: list[str] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            parts.append(content)
+            continue
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(str(block.get("text") or ""))
+    return " ".join(" ".join(parts).split())
+
+
+def _usage_from_response(usage: Any) -> dict[str, Any]:
+    """Normalize OpenAI usage object/dict to a plain dict."""
+    if usage is None:
+        return {}
+    if isinstance(usage, dict):
+        return {
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        }
+    return {
+        "prompt_tokens": int(getattr(usage, "prompt_tokens", 0) or 0),
+        "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
+        "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
+    }
+
+
+def _prepare_openai_create_kwargs(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    prompt_for_seed: str | None = None,
+    **params: Any,
+) -> dict[str, Any]:
+    """Build ``chat.completions.create`` kwargs with seed + Langfuse name/metadata."""
+    api_params = dict(params)
+    seed_basis = api_params.pop("seed_basis", None)
+    name = api_params.pop("name", None)
+    metadata_in = api_params.pop("metadata", None)
+    metadata: dict[str, Any] = dict(metadata_in) if isinstance(metadata_in, dict) else {}
+
+    flow = _flow_label()
+    if flow:
+        metadata.setdefault("agy_flow", flow)
+
+    if "seed" not in api_params:
+        if isinstance(seed_basis, str) and seed_basis.strip():
+            basis = seed_basis.strip()
+        elif prompt_for_seed:
+            basis = " ".join(prompt_for_seed.split())
+        else:
+            basis = _seed_basis_from_messages(messages) or json.dumps(
+                {"model": model, "n": len(messages)}, sort_keys=True
+            )
+        api_params["seed"] = _stable_openai_seed(basis)
+
+    create_kw: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        **api_params,
+    }
+    if langfuse_tracing_enabled():
+        create_kw["name"] = (name or "").strip() or (
+            f"agy-{flow}" if flow else "agy-llm"
+        )
+        if metadata:
+            create_kw["metadata"] = metadata
+    return create_kw
+
+
+def invoke_model_call(
+    call_func: Callable[..., Any],
+    prompt: str,
+    *,
+    name: str,
+    **extra: Any,
+) -> str:
+    """Call ``call_func(prompt, ...)`` with Langfuse ``name`` when the callable accepts kwargs."""
+    kwargs = {"name": name, **extra}
+    try:
+        sig = inspect.signature(call_func)
+        if any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        ) or "name" in sig.parameters:
+            return _require_text(call_func(prompt, **kwargs), "model_call")
+    except (TypeError, ValueError):
+        pass
+    try:
+        return _require_text(call_func(prompt, **kwargs), "model_call")
+    except TypeError:
+        return _require_text(call_func(prompt), "model_call")
 
 
 # Provider clients are cached so repeated calls reuse pooled connections instead
@@ -251,58 +378,153 @@ def _azure_async_client(endpoint: str | None) -> Any:
 
 
 # Provider Callables (Module-Level Functions)
-def openai_llm_call(prompt: str, model: str = "gpt-5-mini", **params) -> str:
-    """OpenAI LLM call (Langfuse-traced when ``LANGFUSE_*`` keys are set)."""
+def openai_chat_completion_result(
+    messages: list[dict[str, Any]],
+    *,
+    model: str = "gpt-5-mini",
+    **params: Any,
+) -> ChatCompletionResult:
+    """OpenAI chat (text or multimodal messages); Langfuse-traced when keys set."""
     openai_cls = _openai_sdk().OpenAI
-
     openai_api_key = _provider_api_key("openai", "OPENAI_API_KEY", "OpenAI")
     client = _cached_sync_client(
         ("openai", _langfuse_cache_tag(), openai_api_key),
         lambda key=openai_api_key: openai_cls(api_key=key),
     )
-    response = client.chat.completions.create(
-        model=model, messages=[{"role": "user", "content": prompt}], **params
+    create_kw = _prepare_openai_create_kwargs(
+        model=model, messages=messages, **params
     )
-    return _require_text(response.choices[0].message.content, "OpenAI")
+    response = client.chat.completions.create(**create_kw)
+    text = _require_text(response.choices[0].message.content, "OpenAI")
+    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
+
+
+def openai_chat_completion(
+    messages: list[dict[str, Any]],
+    *,
+    model: str = "gpt-5-mini",
+    **params: Any,
+) -> str:
+    """OpenAI chat completion text (multimodal messages supported)."""
+    return openai_chat_completion_result(messages, model=model, **params).text
+
+
+async def openai_chat_completion_result_async(
+    messages: list[dict[str, Any]],
+    *,
+    model: str = "gpt-5-mini",
+    **params: Any,
+) -> ChatCompletionResult:
+    """Async OpenAI chat (text or multimodal); Langfuse when keys set."""
+    async_openai_cls = _openai_sdk().AsyncOpenAI
+    openai_api_key = _provider_api_key("openai", "OPENAI_API_KEY", "OpenAI")
+    client = _cached_async_client(
+        ("openai", _langfuse_cache_tag(), openai_api_key),
+        lambda key=openai_api_key: async_openai_cls(api_key=key),
+    )
+    create_kw = _prepare_openai_create_kwargs(
+        model=model, messages=messages, **params
+    )
+    response = await client.chat.completions.create(**create_kw)
+    text = _require_text(response.choices[0].message.content, "OpenAI")
+    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
+
+
+def openai_llm_call(prompt: str, model: str = "gpt-5-mini", **params) -> str:
+    """OpenAI LLM call (Langfuse-traced when ``LANGFUSE_*`` keys are set)."""
+    return openai_chat_completion(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        prompt_for_seed=prompt,
+        **params,
+    )
 
 
 async def openai_llm_call_async(
     prompt: str, model: str = "gpt-5-mini", **params
 ) -> str:
     """OpenAI LLM call (async; Langfuse-traced when ``LANGFUSE_*`` keys are set)."""
-    async_openai_cls = _openai_sdk().AsyncOpenAI
+    result = await openai_chat_completion_result_async(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        prompt_for_seed=prompt,
+        **params,
+    )
+    return result.text
 
-    openai_api_key = _provider_api_key("openai", "OPENAI_API_KEY", "OpenAI")
-    client = _cached_async_client(
-        ("openai", _langfuse_cache_tag(), openai_api_key),
-        lambda key=openai_api_key: async_openai_cls(api_key=key),
+
+def openai_azure_chat_completion_result(
+    messages: list[dict[str, Any]],
+    *,
+    model: str = "gpt-4o",
+    endpoint: str | None = None,
+    **params: Any,
+) -> ChatCompletionResult:
+    """Azure/Foundry chat (text or multimodal); Langfuse when keys set."""
+    client = _azure_sync_client(endpoint)
+    create_kw = _prepare_openai_create_kwargs(
+        model=model, messages=messages, **params
     )
-    response = await client.chat.completions.create(
-        model=model, messages=[{"role": "user", "content": prompt}], **params
+    response = client.chat.completions.create(**create_kw)
+    text = _require_text(response.choices[0].message.content, "Azure OpenAI")
+    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
+
+
+def openai_azure_chat_completion(
+    messages: list[dict[str, Any]],
+    *,
+    model: str = "gpt-4o",
+    endpoint: str | None = None,
+    **params: Any,
+) -> str:
+    """Azure/Foundry chat completion text (multimodal messages supported)."""
+    return openai_azure_chat_completion_result(
+        messages, model=model, endpoint=endpoint, **params
+    ).text
+
+
+async def openai_azure_chat_completion_result_async(
+    messages: list[dict[str, Any]],
+    *,
+    model: str = "gpt-4o",
+    endpoint: str | None = None,
+    **params: Any,
+) -> ChatCompletionResult:
+    """Async Azure/Foundry chat (text or multimodal); Langfuse when keys set."""
+    client = _azure_async_client(endpoint)
+    create_kw = _prepare_openai_create_kwargs(
+        model=model, messages=messages, **params
     )
-    return _require_text(response.choices[0].message.content, "OpenAI")
+    response = await client.chat.completions.create(**create_kw)
+    text = _require_text(response.choices[0].message.content, "Azure OpenAI")
+    return ChatCompletionResult(text=text, usage=_usage_from_response(response.usage))
 
 
 def openai_azure_llm_call(
     prompt: str, model: str = "gpt-4o", endpoint: str | None = None, **params
 ) -> str:
     """Azure OpenAI / Foundry completions (api-key or MI; Langfuse when keys set)."""
-    client = _azure_sync_client(endpoint)
-    response = client.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}], model=model, **params
+    return openai_azure_chat_completion(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        endpoint=endpoint,
+        prompt_for_seed=prompt,
+        **params,
     )
-    return _require_text(response.choices[0].message.content, "Azure OpenAI")
 
 
 async def openai_azure_llm_call_async(
     prompt: str, model: str = "gpt-4o", endpoint: str | None = None, **params
 ) -> str:
     """Azure OpenAI / Foundry completions async (Langfuse when keys set)."""
-    client = _azure_async_client(endpoint)
-    response = await client.chat.completions.create(
-        messages=[{"role": "user", "content": prompt}], model=model, **params
+    result = await openai_azure_chat_completion_result_async(
+        [{"role": "user", "content": prompt}],
+        model=model,
+        endpoint=endpoint,
+        prompt_for_seed=prompt,
+        **params,
     )
-    return _require_text(response.choices[0].message.content, "Azure OpenAI")
+    return result.text
 
 
 def _gemini_client() -> Any:
@@ -446,6 +668,7 @@ class LLMCall:
             # Current model_call (global for now, thread-local later)
             self._current_callable: Callable[..., str] | None = None
             self._current_async_callable: Callable[..., Any] | None = None
+            self._current_provider: str | None = None
 
             # Initialize from config
             self._initialize_from_config()
@@ -481,6 +704,7 @@ class LLMCall:
         """
         if callable:
             custom_callable = callable
+            self._current_provider = None
             if params:
                 configured_params = dict(params)
 
@@ -502,6 +726,7 @@ class LLMCall:
                 self._current_callable = resolved
                 self._current_async_callable = None
         elif provider:
+            self._current_provider = provider
             # Factory builds wrapper
             provider_func = self.provider_registry.get(provider)
             if not provider_func:
@@ -609,6 +834,51 @@ class LLMCall:
         sync_callable = self._current_callable
         result = await asyncio.to_thread(lambda: sync_callable(prompt, **kwargs))
         return _require_text(result, "Configured provider")
+
+    def chat_completion_result(
+        self,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> ChatCompletionResult:
+        """Multimodal/text chat via the configured OpenAI or Azure provider."""
+        provider = self._current_provider or load_llm_config().get(
+            "default_provider", "openai"
+        )
+        if provider == "openai_azure":
+            return openai_azure_chat_completion_result(messages, **kwargs)
+        if provider == "openai":
+            return openai_chat_completion_result(messages, **kwargs)
+        raise ValueError(
+            f"chat_completion is only supported for openai/openai_azure, not {provider!r}"
+        )
+
+    def chat_completion(self, messages: list[dict[str, Any]], **kwargs: Any) -> str:
+        """Multimodal/text chat completion text via the configured provider."""
+        return self.chat_completion_result(messages, **kwargs).text
+
+    async def achat_completion_result(
+        self,
+        messages: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> ChatCompletionResult:
+        """Async multimodal/text chat via the configured OpenAI or Azure provider."""
+        provider = self._current_provider or load_llm_config().get(
+            "default_provider", "openai"
+        )
+        if provider == "openai_azure":
+            return await openai_azure_chat_completion_result_async(messages, **kwargs)
+        if provider == "openai":
+            return await openai_chat_completion_result_async(messages, **kwargs)
+        raise ValueError(
+            f"chat_completion is only supported for openai/openai_azure, not {provider!r}"
+        )
+
+    async def achat_completion(
+        self, messages: list[dict[str, Any]], **kwargs: Any
+    ) -> str:
+        """Async multimodal/text chat completion text via the configured provider."""
+        result = await self.achat_completion_result(messages, **kwargs)
+        return result.text
 
     def register_provider(
         self,
