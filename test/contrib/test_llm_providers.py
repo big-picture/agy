@@ -51,7 +51,8 @@ def test_openai_provider_uses_mocked_sdk(monkeypatch: pytest.MonkeyPatch) -> Non
                     types.SimpleNamespace(
                         message=types.SimpleNamespace(content="Hello")
                     )
-                ]
+                ],
+                usage=None,
             )
 
     class _OpenAI:
@@ -103,7 +104,8 @@ def _mock_azure_openai(calls: dict[str, object]):
                     types.SimpleNamespace(
                         message=types.SimpleNamespace(content="Hello Azure")
                     )
-                ]
+                ],
+                usage=None,
             )
 
     class _AzureOpenAI:
